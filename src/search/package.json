@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "main": "_test-entry.js",
+  "scripts": {
+    "test": "node --test",
+    "bench": "node bench.js"
+  },
+  "//": "main 故意指向 _test-entry.js：Node v24.13 的 `node --test <目录>` 不展开目录，而是把目录当入口模块解析。聚合入口让 `node --test src/search/` 能跑完三个测试文件。跨目录 import 请写 './vector-store.js' 这种显式路径，勿依赖目录解析。"
+}

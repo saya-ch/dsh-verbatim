@@ -1,0 +1,12 @@
+{
+  "record": false,
+  "tools": false,
+  "autoRecall": false,
+  "excludeRanges": [
+    {
+      "from": "2026-11-08T00:00:00+08:00",
+      "to": "2026-11-09T00:00:00+08:00",
+      "reason": "示例：这段不想记"
+    }
+  ]
+}

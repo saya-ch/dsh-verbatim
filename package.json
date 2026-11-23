@@ -1,0 +1,97 @@
+{
+  "name": "dsh-verbatim",
+  "version": "0.1.0",
+  "description": "一字不改的长期记忆 —— 给陪伴型 Agent 记住你们说过的每一句话",
+  "type": "module",
+  "license": "MIT",
+  "author": "saya-ch",
+  "homepage": "https://github.com/saya-ch/dsh-verbatim#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/saya-ch/dsh-verbatim.git"
+  },
+  "bugs": {
+    "url": "https://github.com/saya-ch/dsh-verbatim/issues"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./lib": "./src/index.js",
+    "./store": "./src/store/repo.js",
+    "./ingest": "./src/ingest/export.js",
+    "./search": "./src/search/rrf.js",
+    "./tools": "./src/tools/index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-verbatim": "./bin/cli.mjs",
+    "dsh-verbatim-mcp": "./bin/mcp-memory.mjs"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src/index.js",
+    "src/store/",
+    "src/ingest/",
+    "src/scene/",
+    "src/search/",
+    "src/tools/",
+    "src/model/",
+    "src/derive/",
+    "src/config/",
+    "src/host/",
+    "src/pipeline.js",
+    "src/package.json",
+    "bin/",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "sessions/qqb-p-0000000000-00000000000000000000000000000000.json"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "memory",
+    "companion",
+    "sqlite",
+    "fts5",
+    "verbatim"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "acceptance": "node src/acceptance.js",
+    "mcp": "node bin/mcp-memory.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/build-client.mjs --check && npm run typecheck && node --check index.js && node --check client.js && node --check bin/cli.mjs && node --check bin/mcp-memory.mjs"
+  },
+  "optionalDependencies": {
+    "sqlite-vec": "^0.1.9"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

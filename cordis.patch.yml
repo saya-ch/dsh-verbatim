@@ -1,0 +1,11 @@
+# dsh-verbatim 的挂载声明。
+#
+# 只插入一个 Host 插件行：负责打开记忆库、注册 Agent 工具，并提供 Web 管理面板与设置页（见 package.json 的 dsh.client）。
+- insert:
+    - id: verbatim-memory
+      name: 'dsh-verbatim'
+      config:
+        # 记忆库位置。留空 = $DSH_HOME/verbatim/memory.db
+        dbPath: null
+        # 要同步哪个会话的日志。留空 = 自动找最近修改的那个（通常就是当前会话）
+        sessionFile: null

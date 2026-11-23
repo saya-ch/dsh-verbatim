@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Verbatim memory",
+    "description": "Long-term memory for a companion agent: every message is kept word for word, and the agent can look it up later.",
+    "detail": "README.md"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "main": "tools.test.js",
+  "//": "main 指向 tools.test.js 的原因同 src/store/package.json：Node v24 的 `node --test <目录>` 不展开目录，而是按包解析规则把目录当入口模块。跑本目录全部用例请用 glob：node --test \"src/tools/*.test.js\"（T7 的 remember-forget.test.js 也在同一目录）。"
+}

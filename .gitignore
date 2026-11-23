@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────────────────────────
+# dsh-verbatim —— 这个项目存的是「你们说过的话」，本身就是隐私。
+# 仓库里**绝不能**出现任何真实的记忆库、会话日志、验收报告。
+# ─────────────────────────────────────────────────────────────
+
+# 记忆库与验收产物（含真实对话原文，最危险）
+.tmp/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# 会话日志（DSH 原始数据）
+*.jsonl.zstd
+*.jsonl
+*.zst
+
+# 会话配置：格式示例在 sessions/*.example.json，真实配置不进库
+sessions/*.json
+# 例外：脱敏后的测试 fixture（id 已匿名为全 0）
+!sessions/qqb-p-0000000000-00000000000000000000000000000000.json
+!sessions/*.example.json
+
+# 验收报告 / 导出产物 / 运行态文件
+report.txt
+acceptance-*.txt
+export-*.json
+plugin-status.json
+
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 环境与凭据
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志
+*.log
+logs/
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo

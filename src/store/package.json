@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "main": "repo.test.js",
+  "//": "main 故意指向 repo.test.js：Node v24.13 的 `node --test <目录>` 不展开目录，而是按包解析规则把目录当入口模块。把 main 指到测试文件后，`node --test src/store/` 能真正跑完全部用例（跨目录常量 import 请直接 import './repo.js'，勿依赖目录解析）。"
+}

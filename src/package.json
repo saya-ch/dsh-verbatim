@@ -1,0 +1,4 @@
+{
+  "type": "module",
+  "//": "src/ 根目录下的编排文件（pipeline.js / acceptance.js）是 ESM，靠这个文件声明模块类型；各子目录（store/ingest/scene/tools/model/derive/search/config）已有各自的 package.json，不受影响。"
+}

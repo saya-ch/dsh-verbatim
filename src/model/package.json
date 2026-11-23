@@ -1,0 +1,8 @@
+{
+  "type": "module",
+  "main": "model.test.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "//": "main 指向 model.test.js 的原因同 src/derive：Node v24 的 `node --test <目录>` 不展开目录，而是把目录当入口模块解析。"
+}
