@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * memory_search —— 合并检索（时间路 + 关键词路 + 语义路）
  *
@@ -167,11 +168,20 @@ export function createSearchTool(deps = {}) {
               shapeCache.set(handle, perDb);
             }
             const cacheKey = String(sessionId ?? '');
-            if (!perDb.has(cacheKey)) {
+            const cachedShape = perDb.get(cacheKey);
+            const curMsgs = Number(stats?.msgs ?? 0);
+            const isStale = !cachedShape
+              || Math.abs(curMsgs - cachedShape.msgs) >= 20
+              || (now - cachedShape.checkedAt) > 300_000;
+            if (isStale) {
               const { detectSessionShape } = await import('../search/session-shape.js');
-              perDb.set(cacheKey, detectSessionShape(handle, sessionId));
+              perDb.set(cacheKey, {
+                shape: detectSessionShape(handle, sessionId),
+                msgs: curMsgs,
+                checkedAt: now,
+              });
             }
-            const shape = perDb.get(cacheKey);
+            const shape = perDb.get(cacheKey).shape;
             if (windowQuota === null) windowQuota = shape.windowQuota ?? 1.0;
             if (compactTime === null) compactTime = shape.shape === 'companion';
           } catch {
@@ -383,7 +393,7 @@ export function createSearchTool(deps = {}) {
           const fetchPoolLimit = earlyRerankCfg && hasMultiGranular ? Math.max(poolLimit, 96) : poolLimit;
           if (f2 || hasMultiGranular) {
             if (vectorError) throw vectorError;
-            const rawFused = fuseRRF(
+            const rawFused = /** @type {Array<Record<string, any>>} */ (fuseRRF(
               [
                 { name: 'keyword', hits: rows },
                 { name: 'vector', hits: vectorHits },
@@ -397,7 +407,7 @@ export function createSearchTool(deps = {}) {
                 ...(Number.isFinite(deps.rrfK) ? { k: deps.rrfK } : {}),
                 ...(deps.rrfWeights ? { weights: deps.rrfWeights } : {}),
               },
-            );
+            ));
             const bestWindowBySpan = new Map();
             for (const srcList of [parentThreads, threadRoute, exchangeRoute]) {
               for (const item of srcList) {
@@ -527,7 +537,7 @@ export function createSearchTool(deps = {}) {
           const winIds = hits.map((h) => Number(h.window?.id)).filter((id) => Number.isSafeInteger(id) && id > 0);
           if (winIds.length > 1) {
             const vecMap = semantic.store.getWindowVecs(winIds);
-            hits = foldTimelineClusters(hits, (h) => vecMap.get(Number(h.window?.id)) ?? null, {
+            hits = foldTimelineClusters(hits, (h) => vecMap.get(Number(/** @type {any} */ (h).window?.id)) ?? null, {
               threshold: 0.92,
               limit: Math.max(limit, hits.length),
             });
@@ -539,7 +549,7 @@ export function createSearchTool(deps = {}) {
           try {
             const seenIds = new Set();
             const deduped = [];
-            for (const row of hits) {
+            for (const row of /** @type {Array<Record<string, any>>} */ (hits)) {
               const id = Number(row.id);
               if (seenIds.has(id)) continue;
               seenIds.add(id);

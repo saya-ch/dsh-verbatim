@@ -11,7 +11,8 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "strict": false,
-    "noImplicitThis": false
+    "noImplicitThis": false,
+    "useUnknownInCatchVariables": false
   },
   "include": [
     "index.js",

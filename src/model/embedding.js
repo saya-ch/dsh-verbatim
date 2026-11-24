@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 向量提供方 —— 硅基流动（SiliconFlow）
  *
@@ -57,7 +58,7 @@ class PermanentError extends Error {
  * @param {number} [opts.retryDelayMs] 重试退避基准（毫秒），测试里传 0
  * @param {number} [opts.timeoutMs] 单次请求超时
  * @param {typeof fetch} [opts.fetchImpl] 注入用（测试可替换，生产用全局 fetch）
- * @returns {{id: string, dim: number, maxBatch: number, embed: Function}}
+ * @returns {{id: string, dim: number, maxBatch: number, embed: (texts: string[], signal?: AbortSignal) => Promise<Float32Array[]>}}
  */
 export function createSiliconFlowEmbedding(opts = {}) {
   const model = (typeof opts.model === 'string' && opts.model.trim())
@@ -302,7 +303,7 @@ function sleep(ms, signal) {
     }
     const timer = setTimeout(() => {
       if (signal) signal.removeEventListener('abort', onAbort);
-      resolve();
+      resolve(undefined);
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);

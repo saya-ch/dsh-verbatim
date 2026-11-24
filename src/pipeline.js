@@ -32,8 +32,8 @@ import { createVectorStore, DEFAULT_DIM } from './search/vector-store.js';
 import { buildSceneWindows } from './search/window.js';
 import { coalesceTurns, buildExchanges } from './search/thread.js';
 import { COMPANION_AVG_CHARS } from './search/session-shape.js';
-import { readSessionFile } from './ingest/reader.js';
-import { exportMessages } from './ingest/export.js';
+import { readSessionFile, readSessionFileIncremental } from './ingest/reader.js';
+import { exportMessages, isRewindEvent } from './ingest/export.js';
 import { GAP_CUT_MS, GAP_JOIN_MS, HARD_MAX_SCENE_MSGS, splitScenesWithStats } from './scene/split.js';
 import { linkScenes } from './scene/link.js';
 import { buildExtractiveGist } from './derive/gist.js';
@@ -128,7 +128,8 @@ export function pct(part, whole) {
  *   logger?: {warn(msg:string):void},
  * }} [opts]
  * @returns {{
- *   handle: object, db: object, repo: object, extras: object,
+ *   handle: { db: import('node:sqlite').DatabaseSync, dbPath: string, dshHome: string, hasVec: boolean, vecDllPath: string|null, warnings: string[], close(): void },
+ *   db: import('node:sqlite').DatabaseSync, repo: Record<string, any>, extras: Record<string, any>,
  *   dbPath: string, hasVec: boolean, warnings: string[], close(): void,
  * }}
  */
@@ -943,7 +944,7 @@ export function ensureWindowsForSession({ repo, extras, sessionId, force = false
  * @param {boolean} [maybeOpts.loadVec] 是否加载 sqlite-vec
  * @param {boolean} [maybeOpts.quiet] 不打印进度
  * @param {(line: string) => void} [maybeOpts.log] 打印函数
- * @returns {Promise<object>} 导入报告（统计 + 耗时）
+ * @returns {Promise<Record<string, any>>} 导入报告（统计 + 耗时）
  */
 export async function importSession(sessionFile, dbPathOrOpts, maybeOpts) {
   const opts =
@@ -959,12 +960,21 @@ export async function importSession(sessionFile, dbPathOrOpts, maybeOpts) {
     throw new Error(`会话日志不存在：${sessionFile}`);
   }
 
-  // ── ① 读日志 ────────────────────────────────────────────────
+  // ── ① 读日志（支持传 readerCache / readerState 进行尾部增量解压） ──
+  const absSessionFile = path.resolve(sessionFile);
+  const readerCache = opts.readerCache instanceof Map ? opts.readerCache : null;
+  const prevReaderState = opts.readerState ?? (readerCache ? readerCache.get(absSessionFile) : null) ?? null;
+
   const reader = progress.stepSync(
     '读日志（zstd 逐帧解压 + 按 seq 排序）',
-    () => readSessionFile(sessionFile),
-    (r) => `${n(r.stats.bytes)} 字节 / ${n(r.stats.eventCount)} 事件`,
+    () => (readerCache || opts.readerState !== undefined
+      ? readSessionFileIncremental(absSessionFile, prevReaderState)
+      : readSessionFile(absSessionFile)),
+    (r) => `${n(r.stats.bytes)} 字节 / ${n(r.stats.eventCount)} 事件${r.incremental === 'tail' ? '（尾部增量）' : r.incremental === 'hit' ? '（缓存命中）' : ''}`,
   );
+  if (readerCache && reader.state) {
+    readerCache.set(absSessionFile, reader.state);
+  }
 
   // ── ② 配置 ──────────────────────────────────────────────────
   const sessionId = resolveSessionId(sessionFile, reader.header, opts.sessionId);
@@ -996,58 +1006,110 @@ export async function importSession(sessionFile, dbPathOrOpts, maybeOpts) {
     };
   }
 
-  // ── ③ 导出（rewind 丢弃 / compaction 标记 / 系统注入过滤 / 按日期软排除） ──
-  const exported = progress.stepSync(
-    '导出（rewind 丢弃、compaction 标记、系统注入过滤）',
-    () =>
-      exportMessages(reader.events, {
-        sessionId,
-        includeRewound: true,
-        excludeRanges: cfg.excludeRanges,
-      }),
-    (r) => `${n(r.messages.length)} 条 / ${n(r.stats.totalChars)} 字`,
-  );
-  const messages = exported.messages;
-  const exportStats = exported.stats;
-
-  // ── ④ 入库 ──────────────────────────────────────────────────
+  // ── ③④ 导出与入库 ──────────────────────────────────────────
   const store = adaptStore(opts);
-  const ingest = progress.stepSync(
-    '入库（先删本轮消失的 seq，再 upsert 正文；同一事务）',
-    () => {
-      // rewind 的语义是「这些 seq 不算发生过」。但**不能**按 `seq >= X` 一刀切删：
-      // rewind 之后新到的消息 seq 也 >= X，它们是存活的。一起删再插会
-      //   ① CASCADE 掉它们身上的 flag / beat / media（D-167 说这仨只该增不该丢）
-      //   ② 让 msg.id 漂移，外部持有的 `msg:123` 类引用指错行
-      // 正确做法：算差集 —— 库里已有、但本轮存活集合里没有的 seq，才是真的消失了。
-      const alive = new Set(messages.map((m) => m.seq));
-      const existing = store.repo
-        .msgsByTimeRange(sessionId, 0, Number.MAX_SAFE_INTEGER, 1_000_000, true)
-        .map((m) => m.seq);
-      const gone = existing.filter((s) => !alive.has(s));
+  const tailEvents = Array.isArray(reader.tailEvents) ? reader.tailEvents : null;
+  const excludeSig = JSON.stringify(cfg.excludeRanges ?? []);
+  const prevExcludeSig = prevReaderState?.excludeSig ?? null;
+  const canTailFastPath = Boolean(
+    reader.incremental === 'tail'
+    && tailEvents
+    && prevExcludeSig === excludeSig
+    && tailEvents.every((ev) => (
+      !isRewindEvent(ev)
+      && ev?.type !== 'compaction/summary'
+      && ev?.type !== 'compaction/end'
+      && ev?.type !== 'agent/inbox/spliced'
+      && (typeof ev?.seq !== 'number' || reader.prevSeqMax === null || ev.seq > reader.prevSeqMax)
+    ))
+    && Number(store.db.prepare('SELECT COUNT(*) AS c FROM msg WHERE session_id = ?').get(sessionId)?.c ?? 0) > 0,
+  );
 
-      // 删除与插入必须同一事务：插入一旦失败（脏日志 / SQLITE_BUSY / 磁盘满），
-      // 不能留下「已删未插」的半截库 —— 那违反「原文是唯一事实来源」。
-      return withTx(store.db, () => {
-        // 删与插必须同一事务：插入一旦失败（脏日志 / SQLITE_BUSY / 磁盘满），
-        // 不能留下「已删未插」的半截库 —— 那违反「原文是唯一事实来源」。
-        // deleteMsgsBySeqs 内部会把这几条的向量一起清掉（D-118：撤回不许从向量路复活）。
-        const deleted = gone.length ? store.repo.deleteMsgsBySeqs(sessionId, gone) : 0;
-        store.repo.insertMsgs(messages);
+  let exported;
+  let messages;
+  let exportStats;
+  let ingest;
+
+  if (canTailFastPath) {
+    exported = progress.stepSync(
+      '导出增量尾部（无 rewind / compaction，跳过全量重放）',
+      () =>
+        exportMessages(tailEvents, {
+          sessionId,
+          includeRewound: true,
+          excludeRanges: cfg.excludeRanges,
+        }),
+      (r) => `增量 ${n(r.messages.length)} 条 / ${n(r.stats.totalChars)} 字`,
+    );
+    messages = exported.messages;
+    exportStats = exported.stats;
+    ingest = progress.stepSync(
+      '增量入库（仅写入新增消息与媒体）',
+      () => withTx(store.db, () => {
+        if (messages.length > 0) store.repo.insertMsgs(messages);
         const mediaWritten = exported.media?.length
           ? store.extras.media.replaceForSession(sessionId, exported.media)
           : 0;
         return {
           inserted: messages.length,
-          deleted,
+          deleted: 0,
           media: mediaWritten,
-          rewoundRanges: (exportStats.rewindRanges ?? []).length,
+          rewoundRanges: 0,
+          incremental: true,
         };
-      });
-    },
-    (r) =>
-      `${n(r.inserted)} 条（删掉本轮消失的 ${n(r.deleted)} 条；rewind 区间 ${r.rewoundRanges} 个）`,
-  );
+      }),
+      (r) => `新增 ${n(r.inserted)} 条`,
+    );
+  } else {
+    exported = progress.stepSync(
+      '导出（rewind 丢弃、compaction 标记、系统注入过滤）',
+      () =>
+        exportMessages(reader.events, {
+          sessionId,
+          includeRewound: true,
+          excludeRanges: cfg.excludeRanges,
+        }),
+      (r) => `${n(r.messages.length)} 条 / ${n(r.stats.totalChars)} 字`,
+    );
+    messages = exported.messages;
+    exportStats = exported.stats;
+
+    ingest = progress.stepSync(
+      '入库（先删本轮消失的 seq，再 upsert 正文；同一事务）',
+      () => {
+        // rewind 的语义是「这些 seq 不算发生过」。但**不能**按 `seq >= X` 一刀切删：
+        // rewind 之后新到的消息 seq 也 >= X，它们是存活的。一起删再插会
+        //   ① CASCADE 掉它们身上的 flag / beat / media（D-167 说这仨只该增不该丢）
+        //   ② 让 msg.id 漂移，外部持有的 `msg:123` 类引用指错行
+        // 正确做法：算差集 —— 库里已有、但本轮存活集合里没有的 seq，才是真的消失了。
+        const alive = new Set(messages.map((m) => m.seq));
+        const existing = store.repo
+          .msgsByTimeRange(sessionId, 0, Number.MAX_SAFE_INTEGER, 1_000_000, true)
+          .map((m) => m.seq);
+        const gone = existing.filter((s) => !alive.has(s));
+
+        // 删除与插入必须同一事务：插入一旦失败（脏日志 / SQLITE_BUSY / 磁盘满），
+        // 不能留下「已删未插」的半截库 —— 那违反「原文是唯一事实来源」。
+        return withTx(store.db, () => {
+          const deleted = gone.length ? store.repo.deleteMsgsBySeqs(sessionId, gone) : 0;
+          store.repo.insertMsgs(messages);
+          const mediaWritten = exported.media?.length
+            ? store.extras.media.replaceForSession(sessionId, exported.media)
+            : 0;
+          return {
+            inserted: messages.length,
+            deleted,
+            media: mediaWritten,
+            rewoundRanges: (exportStats.rewindRanges ?? []).length,
+            incremental: false,
+          };
+        });
+      },
+      (r) =>
+        `${n(r.inserted)} 条（删掉本轮消失的 ${n(r.deleted)} 条；rewind 区间 ${r.rewoundRanges} 个）`,
+    );
+  }
+  if (reader.state) reader.state.excludeSig = excludeSig;
 
   // ── ⑤ 增量切场（稳定时间窗 + rewind 局部修复 + compaction 派生刷新）+ 邻接回填 ──
   const sceneReport = progress.stepSync(

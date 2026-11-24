@@ -93,6 +93,7 @@ export function pickInSession(rows, sessionId) {
  *
  * @param {object} extras createExtras() 的返回值
  * @param {string|null} sessionId
+ * @returns {Record<string, any>}
  * @returns {object}
  */
 export function sessionStats(extras, sessionId) {

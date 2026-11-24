@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * dsh-verbatim —— DSH Host 插件入口。
  *
@@ -95,10 +96,13 @@ export function apply(ctx, config = {}) {
 
   /* ───────── 增量同步与轻量自动补索引 ───────── */
 
+  const hostSessionLock = createSessionLock();
   const lastMtimes = new Map();
+  const readerCache = new Map();
   const syncingFiles = new Map();
   let disposed = false;
   let autoIndexing = null;
+  let dbMutationEpoch = 0;
 
   const scheduleAutoIndex = () => {
     if (disposed || autoIndexing) return;
@@ -133,6 +137,7 @@ export function apply(ctx, config = {}) {
       return;
     }
 
+    const startEpoch = dbMutationEpoch;
     autoIndexing = (async () => {
       try {
         const { createSiliconFlowEmbedding } = await import('./src/model/embedding.js');
@@ -161,7 +166,11 @@ export function apply(ctx, config = {}) {
           store,
           logger: { warn: (m) => ctx.logger?.warn?.(`[verbatim] ${m}`) },
         });
-        const r = await indexer.indexPending({ limit: 64 });
+        const r = await hostSessionLock.withLock('__auto_index__', () => indexer.indexPending({ limit: 64 }));
+        // 若补索引期间发生过 clearSession / rebuild 等变更，顺手清理可能残留的孤儿向量
+        if (!disposed && dbMutationEpoch !== startEpoch) {
+          try { store.pruneOrphans(); } catch { /* ignore */ }
+        }
         if (!disposed && r.indexed > 0) {
           ctx.logger?.info?.(`[verbatim] 自动增量补索引 ${r.indexed} 条（${r.elapsedMs}ms）`);
         }
@@ -202,7 +211,7 @@ export function apply(ctx, config = {}) {
       const t0 = Date.now();
       try {
         const lockKey = sessionId || file;
-        const r = await hostSessionLock.withLock(lockKey, () => importSession(file, { handle, dbRoot }));
+        const r = await hostSessionLock.withLock(lockKey, () => importSession(file, { handle, dbRoot, readerCache }));
         lastMtimes.set(file, stat.mtimeMs);
         const inserted = Number(r?.ingest?.inserted ?? 0);
         ctx.logger?.info?.(`[verbatim] 同步 ${Date.now() - t0}ms：${r?.ingest?.inserted ?? '?'} 条`);
@@ -228,7 +237,6 @@ export function apply(ctx, config = {}) {
     ? { ...defaultSessionConfig(), ...config.session }
     : undefined;
 
-  const hostSessionLock = createSessionLock();
   const recallLogEntries = [];
   const pushRecallEntry = (entry) => {
     recallLogEntries.unshift(entry);
@@ -279,8 +287,10 @@ export function apply(ctx, config = {}) {
     refiningSessions.add(sessionId);
     (async () => {
       try {
-        const unrefined = repo.scenesByTimeRange(sessionId, 0, Number.MAX_SAFE_INTEGER, 5000)
-          .filter((s) => s.gistSource !== 'llm');
+        const unrefined = await hostSessionLock.withLock(sessionId, () => (
+          repo.scenesByTimeRange(sessionId, 0, Number.MAX_SAFE_INTEGER, 5000)
+            .filter((s) => s.gistSource !== 'llm' && s.gistSource !== 'manual')
+        ));
         const remain = Math.max(0, limit - dailyRefineBudget.used);
         const batch = unrefined.slice(0, Math.min(remain, 8));
         if (batch.length === 0) return;
@@ -294,15 +304,21 @@ export function apply(ctx, config = {}) {
             if (dailyRefineBudget.used >= limit) break;
             const sc = batch[cursor++];
             try {
-              const msgs = repo.msgsByScene(sc.id, false);
+              const msgs = await hostSessionLock.withLock(sessionId, () => repo.msgsByScene(sc.id, false));
               if (msgs.length === 0) continue;
               const gr = await generateGist({ llm: llmAdapter, msgs, startAt: sc.startAt, endAt: sc.endAt });
-              if (gr.ok && gr.gist) {
+              if (disposed || !gr.ok || !gr.gist) continue;
+              await hostSessionLock.withLock(sessionId, () => {
+                if (dailyRefineBudget.used >= limit) return;
+                // 写入前在会话锁内复核：避免覆盖人工摘要或已重建/合并的旧场景
+                const latest = repo.sceneById(sc.id);
+                if (!latest || latest.sessionId !== sessionId) return;
+                if (latest.gistSource === 'llm' || latest.gistSource === 'manual') return;
                 repo.setSceneGist(sc.id, gr.gist, { source: 'llm' });
                 dailyRefineBudget.used += 1;
                 done += 1;
                 saveRefineBudget();
-              }
+              });
             } catch { /* ignore */ }
           }
         };
@@ -544,6 +560,13 @@ export function apply(ctx, config = {}) {
       handler: createPanelHandler(panelApi, {
         beforeRequest: ensureFresh,
         afterCall: ({ method, params }) => {
+          if (method === 'dbMaintain' && params?.action === 'clearSession') {
+            dbMutationEpoch += 1;
+            invalidateFresh(params.sessionId);
+          }
+          if (method === 'rebuild') {
+            dbMutationEpoch += 1;
+          }
           if (method === 'set' && params?.key === 'record' && params?.value === true) {
             invalidateFresh(params.sessionId);
           }

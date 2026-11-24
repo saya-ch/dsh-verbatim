@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 全局配置解析、脱敏与状态视图构造（供 Host 面板与设置页共用）。
  */
@@ -89,6 +90,7 @@ export function buildVecExtView(handle) {
   };
 }
 
+/** @param {{ config?: Record<string, any>, dshHome?: string, logger?: any, getHostLlm?: () => any }} opts */
 export function createConfigResolver({ config = {}, dshHome, logger, getHostLlm }) {
   let globalCfgCache = null;
 

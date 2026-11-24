@@ -120,9 +120,11 @@ CREATE TABLE IF NOT EXISTS fact (
   source_kind TEXT    NOT NULL DEFAULT 'msg' CHECK (source_kind IN ('msg','scene')),
   source_seq  INTEGER NOT NULL,              -- 必须指向真实 msg.seq
   origin      TEXT    NOT NULL,              -- extracted_from_user | user_confirmed | her_claim
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  session_id  TEXT                           -- 归属会话（v16 起，NULL = 遗留无归属）
 );
 CREATE INDEX IF NOT EXISTS idx_fact_subject ON fact(subject, key);
+CREATE INDEX IF NOT EXISTS idx_fact_session ON fact(session_id, subject, created_at);
 
 -- ---------------------------------------------------------------------------
 -- ⑤ 媒体：只记位置

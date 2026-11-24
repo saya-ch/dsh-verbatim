@@ -647,6 +647,16 @@ export function createVectorStore(handle, options = {}) {
     return new Array(n).fill('?').join(', ');
   }
 
+  const MAX_IN_CHUNK = 400;
+
+  /** 分片执行 `IN (...)` 查询（避免超出 SQLITE_MAX_VARIABLE_NUMBER 且不污染 stmtCache） */
+  function queryByIds(ids, runSlice) {
+    const clean = toParams(ids);
+    for (let i = 0; i < clean.length; i += MAX_IN_CHUNK) {
+      runSlice(clean.slice(i, i + MAX_IN_CHUNK));
+    }
+  }
+
   /** IN 列表里每个 id 都过一遍 pk 校验（vec0 的 rowid 是整数） */
   function toParams(ids) {
     return ids.map((id) => {
@@ -657,36 +667,94 @@ export function createVectorStore(handle, options = {}) {
   }
 
   /**
+   * 降级模式预过滤：当存在 sessionId / 时间等缩小范围条件且全库向量数较多时，
+   * 先在 SQLite 利用索引拿目标 id 集合，避免对无关会话全量计算点积与排序。
+   */
+  function prefilterFallbackIds(kind, filter, totalCount) {
+    if (totalCount <= 200) return null;
+    const hasNarrowFilter = Boolean(filter.sessionId)
+      || Number.isFinite(filter.from)
+      || Number.isFinite(filter.to)
+      || Number.isFinite(filter.sceneId);
+    if (!hasNarrowFilter) return null;
+    try {
+      const where = [];
+      const args = [];
+      let sql;
+      if (kind === 'msg') {
+        if (!filter.includeExcluded) where.push('excluded = 0');
+        if (filter.sessionId) { where.push('session_id = ?'); args.push(filter.sessionId); }
+        if (Number.isFinite(filter.from)) { where.push('at >= ?'); args.push(filter.from); }
+        if (Number.isFinite(filter.to)) { where.push('at < ?'); args.push(filter.to); }
+        if (Number.isFinite(filter.sceneId)) { where.push('scene_id = ?'); args.push(filter.sceneId); }
+        sql = `SELECT id FROM msg${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`;
+      } else if (kind === 'scene') {
+        if (filter.sessionId) { where.push('session_id = ?'); args.push(filter.sessionId); }
+        if (Number.isFinite(filter.from)) { where.push('end_at >= ?'); args.push(filter.from); }
+        if (Number.isFinite(filter.to)) { where.push('start_at < ?'); args.push(filter.to); }
+        sql = `SELECT id FROM scene${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`;
+      } else if (kind === 'note') {
+        where.push('deleted_at IS NULL');
+        if (filter.sessionId) { where.push('session_id = ?'); args.push(filter.sessionId); }
+        if (Number.isFinite(filter.from)) { where.push('at >= ?'); args.push(filter.from); }
+        if (Number.isFinite(filter.to)) { where.push('at < ?'); args.push(filter.to); }
+        sql = `SELECT id FROM note WHERE ${where.join(' AND ')}`;
+      } else if (kind === 'chunk') {
+        if (filter.sessionId) { where.push('m.session_id = ?'); args.push(filter.sessionId); }
+        if (!filter.includeExcluded) where.push('m.excluded = 0');
+        if (Number.isFinite(filter.from)) { where.push('m.at >= ?'); args.push(filter.from); }
+        if (Number.isFinite(filter.to)) { where.push('m.at < ?'); args.push(filter.to); }
+        sql = `SELECT c.id FROM chunk c JOIN msg m ON m.id = c.msg_id${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`;
+      } else if (kind === 'window') {
+        if (filter.sessionId) { where.push('session_id = ?'); args.push(filter.sessionId); }
+        if (filter.kind) { where.push('kind = ?'); args.push(String(filter.kind)); }
+        if (Number.isFinite(filter.from)) { where.push('end_at >= ?'); args.push(filter.from); }
+        if (Number.isFinite(filter.to)) { where.push('start_at < ?'); args.push(filter.to); }
+        sql = `SELECT id FROM window${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`;
+      } else {
+        return null;
+      }
+      const rows = db.prepare(sql).all(...args);
+      return new Set(rows.map((r) => Number(r.id)));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 第二段：外层 JOIN + 过滤（D-150 的"时间过滤放外层"就落在这里）。
    * 返回 Map<id, row>，没通过过滤的 id 不会出现在里面。
    */
   function hydrateMsgs(ids, filter = {}) {
     if (ids.length === 0) return new Map();
     const where = [];
-    const args = toParams(ids);
+    const extraArgs = [];
     if (!filter.includeExcluded) where.push('m.excluded = 0');
     if (filter.sessionId) {
       where.push('m.session_id = ?');
-      args.push(filter.sessionId);
+      extraArgs.push(filter.sessionId);
     }
     if (Number.isFinite(filter.from)) {
       where.push('m.at >= ?');
-      args.push(filter.from);
+      extraArgs.push(filter.from);
     }
     if (Number.isFinite(filter.to)) {
       where.push('m.at < ?'); // 左闭右开，和 msgsByTimeRange 一致
-      args.push(filter.to);
+      extraArgs.push(filter.to);
     }
     if (Number.isFinite(filter.sceneId)) {
       where.push('m.scene_id = ?');
-      args.push(filter.sceneId);
+      extraArgs.push(filter.sceneId);
     }
-    const sql =
-      `SELECT ${MSG_SELECT}
-       FROM msg m LEFT JOIN scene s ON s.id = m.scene_id
-       WHERE m.id IN (${placeholders(ids.length)})${where.length ? ` AND ${where.join(' AND ')}` : ''}`;
     const map = new Map();
-    for (const r of stmt(sql).all(...args)) map.set(Number(r.id), mapMsgRow(r));
+    const tail = where.length ? ` AND ${where.join(' AND ')}` : '';
+    queryByIds(ids, (slice) => {
+      const sql =
+        `SELECT ${MSG_SELECT}
+         FROM msg m LEFT JOIN scene s ON s.id = m.scene_id
+         WHERE m.id IN (${placeholders(slice.length)})${tail}`;
+      for (const r of db.prepare(sql).all(...slice, ...extraArgs)) map.set(Number(r.id), mapMsgRow(r));
+    });
     return map;
   }
 
@@ -694,24 +762,27 @@ export function createVectorStore(handle, options = {}) {
   function hydrateScenes(ids, filter = {}) {
     if (ids.length === 0) return new Map();
     const where = [];
-    const args = toParams(ids);
+    const extraArgs = [];
     if (filter.sessionId) {
       where.push('session_id = ?');
-      args.push(filter.sessionId);
+      extraArgs.push(filter.sessionId);
     }
     if (Number.isFinite(filter.from)) {
       where.push('end_at >= ?');
-      args.push(filter.from);
+      extraArgs.push(filter.from);
     }
     if (Number.isFinite(filter.to)) {
       where.push('start_at < ?');
-      args.push(filter.to);
+      extraArgs.push(filter.to);
     }
-    const sql =
-      `SELECT * FROM scene
-       WHERE id IN (${placeholders(ids.length)})${where.length ? ` AND ${where.join(' AND ')}` : ''}`;
     const map = new Map();
-    for (const r of stmt(sql).all(...args)) map.set(Number(r.id), mapSceneRow(r));
+    const tail = where.length ? ` AND ${where.join(' AND ')}` : '';
+    queryByIds(ids, (slice) => {
+      const sql =
+        `SELECT * FROM scene
+         WHERE id IN (${placeholders(slice.length)})${tail}`;
+      for (const r of db.prepare(sql).all(...slice, ...extraArgs)) map.set(Number(r.id), mapSceneRow(r));
+    });
     return map;
   }
 
@@ -782,97 +853,106 @@ export function createVectorStore(handle, options = {}) {
   function hydrateNotes(ids, filter = {}) {
     if (ids.length === 0) return new Map();
     const where = ['n.deleted_at IS NULL'];
-    const args = toParams(ids);
+    const extraArgs = [];
     if (filter.sessionId) {
       where.push('n.session_id = ?');
-      args.push(filter.sessionId);
+      extraArgs.push(filter.sessionId);
     }
     if (Number.isFinite(filter.from)) {
       where.push('n.at >= ?');
-      args.push(filter.from);
+      extraArgs.push(filter.from);
     }
     if (Number.isFinite(filter.to)) {
       where.push('n.at < ?');
-      args.push(filter.to);
+      extraArgs.push(filter.to);
     }
-    const rows = stmt(
-      `SELECT n.id, n.content, n.about, n.at, n.session_id
-         FROM note n
-        WHERE n.id IN (${placeholders(ids.length)})
-          AND ${where.join(' AND ')}`,
-    ).all(...args);
     const map = new Map();
-    for (const r of rows) {
-      map.set(Number(r.id), {
-        id: Number(r.id),
-        content: String(r.content ?? ''),
-        about: r.about ?? null,
-        at: Number(r.at),
-        sessionId: r.session_id ?? null,
-      });
-    }
+    const cond = where.join(' AND ');
+    queryByIds(ids, (slice) => {
+      const rows = db.prepare(
+        `SELECT n.id, n.content, n.about, n.at, n.session_id
+           FROM note n
+          WHERE n.id IN (${placeholders(slice.length)})
+            AND ${cond}`,
+      ).all(...slice, ...extraArgs);
+      for (const r of rows) {
+        map.set(Number(r.id), {
+          id: Number(r.id),
+          content: String(r.content ?? ''),
+          about: r.about ?? null,
+          at: Number(r.at),
+          sessionId: r.session_id ?? null,
+        });
+      }
+    });
     return map;
   }
 
   function hydrateChunks(ids, filter = {}) {
     if (ids.length === 0) return new Map();
-    const where = [`c.id IN (${placeholders(ids.length)})`];
-    const args = toParams(ids);
+    const extraWhere = [];
+    const extraArgs = [];
     if (filter.sessionId) {
-      where.push('m.session_id = ?');
-      args.push(filter.sessionId);
+      extraWhere.push('m.session_id = ?');
+      extraArgs.push(filter.sessionId);
     }
-    if (!filter.includeExcluded) where.push('m.excluded = 0');
+    if (!filter.includeExcluded) extraWhere.push('m.excluded = 0');
     if (Number.isFinite(filter.from)) {
-      where.push('m.at >= ?');
-      args.push(filter.from);
+      extraWhere.push('m.at >= ?');
+      extraArgs.push(filter.from);
     }
     if (Number.isFinite(filter.to)) {
-      where.push('m.at < ?');
-      args.push(filter.to);
+      extraWhere.push('m.at < ?');
+      extraArgs.push(filter.to);
     }
-    const rows = stmt(
-      `SELECT c.id, c.msg_id, c.idx, c.start_char, c.end_char,
-              m.session_id, m.excluded, m.at
-         FROM chunk c JOIN msg m ON m.id = c.msg_id
-        WHERE ${where.join(' AND ')}`,
-    ).all(...args);
     const map = new Map();
-    for (const r of rows) map.set(Number(r.id), r);
+    const tail = extraWhere.length ? ` AND ${extraWhere.join(' AND ')}` : '';
+    queryByIds(ids, (slice) => {
+      const rows = db.prepare(
+        `SELECT c.id, c.msg_id, c.idx, c.start_char, c.end_char,
+                m.session_id, m.excluded, m.at
+           FROM chunk c JOIN msg m ON m.id = c.msg_id
+          WHERE c.id IN (${placeholders(slice.length)})${tail}`,
+      ).all(...slice, ...extraArgs);
+      for (const r of rows) map.set(Number(r.id), r);
+    });
     return map;
   }
 
   function hydrateWindows(ids, filter = {}) {
     if (ids.length === 0) return new Map();
-    const where = [`w.id IN (${placeholders(ids.length)})`];
-    const args = toParams(ids);
+    const extraWhere = [];
+    const extraArgs = [];
     if (filter.sessionId) {
-      where.push('w.session_id = ?');
-      args.push(filter.sessionId);
+      extraWhere.push('w.session_id = ?');
+      extraArgs.push(filter.sessionId);
     }
     if (filter.kind) {
-      where.push('w.kind = ?');
-      args.push(String(filter.kind));
+      extraWhere.push('w.kind = ?');
+      extraArgs.push(String(filter.kind));
     }
     if (Number.isFinite(filter.from)) {
-      where.push('w.end_at >= ?');
-      args.push(filter.from);
+      extraWhere.push('w.end_at >= ?');
+      extraArgs.push(filter.from);
     }
     if (Number.isFinite(filter.to)) {
-      where.push('w.start_at < ?');
-      args.push(filter.to);
+      extraWhere.push('w.start_at < ?');
+      extraArgs.push(filter.to);
     }
     try {
-      const rows = stmt(
-        `SELECT w.id, w.session_id, w.scene_id, w.idx, w.kind, w.start_msg_id, w.end_msg_id,
-                w.start_at, w.end_at, w.msg_count, w.text,
-                s.start_at AS scene_start_at, s.end_at AS scene_end_at, s.msg_count AS scene_msg_count
-           FROM window w
-           LEFT JOIN scene s ON s.id = w.scene_id
-          WHERE ${where.join(' AND ')}`,
-      ).all(...args);
       const map = new Map();
-      for (const r of rows) map.set(Number(r.id), r);
+      const tail = extraWhere.length ? ` AND ${extraWhere.join(' AND ')}` : '';
+      queryByIds(ids, (slice) => {
+        const rows = db.prepare(
+          `SELECT w.id, w.session_id, w.scene_id, w.idx, w.kind, w.start_msg_id, w.end_msg_id,
+                  w.start_at, w.end_at, w.msg_count, w.text,
+                  s.start_at AS scene_start_at, s.end_at AS scene_end_at, s.msg_count AS scene_msg_count
+             FROM window w
+             LEFT JOIN scene s ON s.id = w.scene_id
+            WHERE w.id IN (${placeholders(slice.length)})${tail}`,
+        ).all(...slice, ...extraArgs);
+        for (const r of rows) map.set(Number(r.id), r);
+      });
       return map;
     } catch {
       return new Map();
@@ -883,7 +963,8 @@ export function createVectorStore(handle, options = {}) {
    * 统一的过滤型 KNN 召回器：
    * - vec0 模式：若外层条件（如 sessionId / 时间范围）过滤后不足 want 条，渐进扩大 overFetch 再查，
    *   避免多会话大库场景下小会话被全局 Top-8k 挤掉而漏召回。
-   * - 降级模式：全库只算一次 dot 排序，分批 hydrate 直到凑齐 want 条或遍历完，不再做多余 O(n·dim) 扫描。
+   * - 降级模式：先按 sessionId/时间在 SQLite 预过滤候选 ID，再对命中范围算 dot 排序，
+   *   避免多会话大库下对无关会话全量计算点积。
    */
   function runFilteredKnn({ kind, query, want, total, filter = {}, hydrate, buildHit }) {
     if (total === 0) return [];
@@ -892,8 +973,34 @@ export function createVectorStore(handle, options = {}) {
     const minScore = Number.isFinite(filter.minScore) ? filter.minScore : null;
 
     if (!hasVec) {
-      // 降级模式下 candidates(..., total) 只算一次全量点积；按块 hydrate，凑齐即止
-      const allCands = candidates(kind, q, total);
+      ensureFallbackLoaded();
+      const source = kind === 'msg'
+        ? msgVectors
+        : kind === 'chunk'
+          ? chunkVectors
+          : kind === 'note'
+            ? noteVectors
+            : kind === 'window'
+              ? windowVectors
+              : sceneVectors;
+      const allowed = prefilterFallbackIds(kind, filter, source.size);
+      if (allowed && allowed.size === 0) return [];
+
+      let allCands;
+      if (allowed) {
+        allCands = [];
+        for (const id of allowed) {
+          const vec = source.get(id);
+          if (!vec) continue;
+          const score = dot(q, vec);
+          if (minScore !== null && score < minScore) continue;
+          allCands.push({ id, distance: scoreToDistance(score) });
+        }
+        allCands.sort((a, b) => a.distance - b.distance || a.id - b.id);
+      } else {
+        allCands = candidates(kind, q, total);
+      }
+
       const batchSize = Math.max(want * 4, 64);
       const out = [];
       for (let offset = 0; offset < allCands.length && out.length < want; offset += batchSize) {
@@ -904,7 +1011,6 @@ export function createVectorStore(handle, options = {}) {
           if (!row) continue;
           const score = distanceToScore(c.distance);
           if (minScore !== null && score < minScore) {
-            // c.distance 升序 ⇒ score 降序，后面只会更低，直接结束
             return out;
           }
           out.push(buildHit(row, c, score, out.length + 1));
@@ -914,7 +1020,7 @@ export function createVectorStore(handle, options = {}) {
       return out;
     }
 
-    const maxFetch = Math.min(total, Math.max(8192, want * 128));
+    const maxFetch = Math.min(total, Math.max(16384, want * 256));
     let fetch = Math.min(total, Math.max(1, Math.ceil(want * baseFactor)));
     const seenIds = new Set();
     const out = [];
@@ -1416,8 +1522,11 @@ export function createVectorStore(handle, options = {}) {
       if (list.length === 0) return [];
       if (hasVec) {
         try {
-          const rows = stmt(`SELECT note_id AS id FROM vec_note WHERE note_id IN (${placeholders(list.length)})`).all(...list);
-          const have = new Set(rows.map((r) => Number(r.id)));
+          const have = new Set();
+          queryByIds(list, (slice) => {
+            const rows = db.prepare(`SELECT note_id AS id FROM vec_note WHERE note_id IN (${placeholders(slice.length)})`).all(...slice);
+            for (const r of rows) have.add(Number(r.id));
+          });
           return list.filter((id) => !have.has(id));
         } catch {
           return list;
@@ -1538,11 +1647,12 @@ export function createVectorStore(handle, options = {}) {
       if (list.length === 0) return out;
       if (hasVec) {
         try {
-          const ph = list.map(() => '?').join(',');
-          const rows = db.prepare(`SELECT window_id, emb FROM vec_window WHERE window_id IN (${ph})`).all(...list.map((id) => BigInt(id)));
-          for (const r of rows) {
-            if (r?.emb) out.set(Number(r.window_id), toFloat32(r.emb, dim, `window ${r.window_id} 的向量`));
-          }
+          queryByIds(list, (slice) => {
+            const rows = db.prepare(`SELECT window_id, emb FROM vec_window WHERE window_id IN (${placeholders(slice.length)})`).all(...slice.map((id) => BigInt(id)));
+            for (const r of rows) {
+              if (r?.emb) out.set(Number(r.window_id), toFloat32(r.emb, dim, `window ${r.window_id} 的向量`));
+            }
+          });
         } catch { /* ignore */ }
       } else {
         ensureFallbackLoaded();

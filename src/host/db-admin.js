@@ -5,7 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, constants as sqliteConstants } from 'node:sqlite';
 import { loadSessionConfig, sessionConfigPath, sessionsDir } from '../config/session-config.js';
 import { deleteVecRows, withTx } from '../store/repo.js';
 
@@ -477,6 +477,37 @@ export function createDbAdmin({
     const collected = [];
     let truncated = false;
 
+    const readonlyPragmaAllowed = new Set([
+      'table_info', 'table_xinfo', 'index_list', 'index_info',
+      'foreign_key_list', 'table_list', 'database_list',
+    ]);
+    const installReadonlyAuthorizer = (conn) => {
+      if (typeof conn.setAuthorizer !== 'function' || !sqliteConstants) return false;
+      const {
+        SQLITE_OK,
+        SQLITE_DENY,
+        SQLITE_SELECT,
+        SQLITE_READ,
+        SQLITE_FUNCTION,
+        SQLITE_PRAGMA,
+      } = sqliteConstants;
+      conn.setAuthorizer((actionCode, arg1, arg2) => {
+        if (actionCode === SQLITE_SELECT || actionCode === SQLITE_READ || actionCode === SQLITE_FUNCTION) {
+          return SQLITE_OK;
+        }
+        if (actionCode === SQLITE_PRAGMA) {
+          // 仅放行只读 PRAGMA：不带赋值参数，或白名单自省函数
+          const name = typeof arg1 === 'string' ? arg1.toLowerCase() : '';
+          if (arg2 === null || arg2 === undefined) return SQLITE_OK;
+          if (readonlyPragmaAllowed.has(name)) return SQLITE_OK;
+          return SQLITE_DENY;
+        }
+        // 拦截一切写入、DDL、ATTACH、TRANSACTION 以及 SQLITE_RECURSIVE（防无限递归 CTE 卡死单线程）
+        return SQLITE_DENY;
+      });
+      return true;
+    };
+
     const runBounded = (conn) => {
       const s = conn.prepare(sql);
       for (const r of s.iterate()) {
@@ -492,20 +523,35 @@ export function createDbAdmin({
       const ro = new DatabaseSync(dbPath, { readOnly: true });
       try {
         ro.exec('PRAGMA busy_timeout = 3000; PRAGMA query_only = ON');
+        installReadonlyAuthorizer(ro);
         runBounded(ro);
       } catch (e) {
-        throw new PanelError('SQL_ERROR', `SQL 执行失败：${e?.message ?? e}`, 400);
+        const msg = e?.message ?? String(e);
+        if (/not authorized/i.test(msg)) {
+          throw new PanelError('READONLY_SQL', `SQL 被只读沙箱拦截：${msg}`, 400);
+        }
+        throw new PanelError('SQL_ERROR', `SQL 执行失败：${msg}`, 400);
       } finally {
+        try { ro.setAuthorizer?.(null); } catch { /* ignore */ }
         try { ro.close(); } catch { /* ignore */ }
       }
     } else {
-      db.exec('PRAGMA query_only = ON');
+      const hasAuth = installReadonlyAuthorizer(db);
+      if (!hasAuth) db.exec('PRAGMA query_only = ON');
       try {
         runBounded(db);
       } catch (e) {
-        throw new PanelError('SQL_ERROR', `SQL 执行失败：${e?.message ?? e}`, 400);
+        const msg = e?.message ?? String(e);
+        if (/not authorized/i.test(msg)) {
+          throw new PanelError('READONLY_SQL', `SQL 被只读沙箱拦截：${msg}`, 400);
+        }
+        throw new PanelError('SQL_ERROR', `SQL 执行失败：${msg}`, 400);
       } finally {
-        try { db.exec('PRAGMA query_only = OFF'); } catch { /* ignore */ }
+        if (hasAuth) {
+          try { db.setAuthorizer(null); } catch { /* ignore */ }
+        } else {
+          try { db.exec('PRAGMA query_only = OFF'); } catch { /* ignore */ }
+        }
       }
     }
 

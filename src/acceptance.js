@@ -272,12 +272,12 @@ export async function prepareContext(opts = {}) {
   }
 
   const { repo, extras, handle } = store;
-  const toolSet = createToolSet({ handle, sessionId: ctx.sessionId });
-  const tools = new Map(toolSet.tools.map((t) => [t.name, t]));
 
   // 日志真值：验收 4/6 要拿它当基准
   const reader = readSessionFile(sessionFile);
   const sessionId = reader.header?.id ?? path.basename(path.dirname(path.resolve(sessionFile)));
+  const toolSet = createToolSet({ handle, sessionId });
+  const tools = new Map(toolSet.tools.map((t) => [t.name, t]));
   const excludeRanges = loadSessionExcludeRanges(sessionId, { dbRoot });
   const truth = exportMessages(reader.events, { sessionId, includeRewound: true, excludeRanges });
 

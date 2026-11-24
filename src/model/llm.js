@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 对话模型提供方 —— DeepSeek
  *
@@ -154,7 +155,7 @@ export function createDeepSeekLlm(opts = {}) {
 
       if (!res.ok) {
         const text = await safeText(res);
-        const err = new Error(`对话模型请求失败 HTTP ${res.status}：${text.slice(0, 200)}`);
+        const err = /** @type {Error & { statusCode?: number }} */ (new Error(`对话模型请求失败 HTTP ${res.status}：${text.slice(0, 200)}`));
         err.statusCode = res.status;
         throw err;
       }
@@ -192,7 +193,7 @@ function sleep(ms, signal) {
     }
     const timer = setTimeout(() => {
       if (signal) signal.removeEventListener('abort', onAbort);
-      resolve();
+      resolve(undefined);
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * vector-route.js —— memory_search 的语义路、精排与候选归并模块
  *
@@ -427,7 +428,7 @@ export async function runVectorRoute({
     ? `Instruct: Given a conversation search query, retrieve relevant dialogue messages and events\nQuery: ${query}`
     : query;
   const [vec] = await provider.embed([embedQuery]);
-  if (!vec) return [];
+  if (!vec) return { hits: [], chunkRoute: [], exchangeRoute: [], threadRoute: [] };
   const filter = { sessionId, includeExcluded, limit: perRoute };
   if (bounds) {
     filter.from = bounds.from;
@@ -601,7 +602,7 @@ export async function runVectorRoute({
   const mainHits = dedupeBySpan(sortedRaw, { mode: 'score', limit: perRoute });
 
   if (chunkAsSeparateRoute) {
-    const mainIds = new Set(mainHits.map((h) => Number(h.id)));
+    const mainIds = new Set(mainHits.map((h) => Number(/** @type {any} */ (h).id)));
     const extraChunks = chunkAsMsg
       .filter((r) => !mainIds.has(Number(r.id)))
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))

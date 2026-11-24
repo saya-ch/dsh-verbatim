@@ -717,7 +717,7 @@ export function runTimelineRoute(input) {
  * @param {{
  *   repo: object, sessionId?: string|null, now: number, extras: object,
  *   window: {kind:string, from:number|null, to:number|null, label:string},
- *   limit?: number, includeExcluded?: boolean,
+ *   limit?: number, includeExcluded?: boolean, dshHome?: string|null,
  * }} input
  * @returns {string}
  */

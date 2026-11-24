@@ -286,6 +286,9 @@ function readRequestBody(req) {
  *   handle: object, repo?: object, extras?: object,
  *   dbPath?: string, dshHome?: string, dbRoot?: string,
  *   config?: object, logger?: {info?(m:string):void, warn?(m:string):void},
+ *   sessionLock?: object, recallLog?: object[],
+ *   getHostLlm?: () => object|null, hostLlm?: object,
+ *   syncSession?: (sessionId: string) => Promise<object>,
  * }} opts
  */
 export function createPanelApi(opts = {}) {
@@ -1897,6 +1900,40 @@ const SKIP_SYNC_METHODS = new Set([
   'updateNote',
 ]);
 
+function isSameOriginRequest(req, allowedOrigins = null) {
+  const secFetchSite = String(req?.headers?.['sec-fetch-site'] ?? '').trim().toLowerCase();
+  if (secFetchSite === 'cross-site') return false;
+
+  const rawOrigin = req?.headers?.origin;
+  if (typeof rawOrigin !== 'string' || !rawOrigin.trim()) return true;
+  const origin = rawOrigin.trim();
+  if (Array.isArray(allowedOrigins) && allowedOrigins.includes(origin)) return true;
+
+  let parsedOrigin;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    return false;
+  }
+  const hostHeader = String(req?.headers?.host ?? '').trim();
+  if (!hostHeader) return false;
+  if (parsedOrigin.host.toLowerCase() === hostHeader.toLowerCase()) return true;
+
+  // 允许本机回环别名（localhost / 127.0.0.1 / [::1]）在同端口下互通
+  const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+  let parsedHost;
+  try {
+    parsedHost = new URL(`http://${hostHeader}`);
+  } catch {
+    return false;
+  }
+  const oHost = parsedOrigin.hostname.toLowerCase();
+  const hHost = parsedHost.hostname.toLowerCase();
+  const oPort = parsedOrigin.port || (parsedOrigin.protocol === 'https:' ? '443' : '80');
+  const hPort = parsedHost.port || (parsedOrigin.protocol === 'https:' ? '443' : '80');
+  return loopbackHosts.has(oHost) && loopbackHosts.has(hHost) && oPort === hPort;
+}
+
 /**
  * 把 createPanelApi() 适配成 DSH webServer 的 handler。
  *
@@ -1904,13 +1941,31 @@ const SKIP_SYNC_METHODS = new Set([
  * 参数同时接受 query（GET）和 JSON body（POST）。
  *
  * @param {object} api createPanelApi() 的返回值
- * @param {{beforeRequest?: (ctx: {method: string, sessionId: string|null}) => Promise<void>|void}} [opts]
+ * @param {{
+ *   beforeRequest?: (ctx: {method: string, sessionId: string|null}) => Promise<void>|void,
+ *   afterCall?: (ctx: {method: string, params: Record<string, any>, result: unknown}) => Promise<void>|void,
+ *   allowedOrigins?: string[],
+ * }} [opts]
  */
 export function createPanelHandler(api, opts = {}) {
   const beforeRequest = typeof opts.beforeRequest === 'function' ? opts.beforeRequest : null;
   const afterCall = typeof opts.afterCall === 'function' ? opts.afterCall : null;
+  const allowedOrigins = Array.isArray(opts.allowedOrigins) ? opts.allowedOrigins : null;
 
   return async function handler(req, res) {
+    const httpMethod = String(req?.method ?? 'GET').toUpperCase();
+    if (!['GET', 'POST', 'HEAD', 'OPTIONS'].includes(httpMethod)) {
+      return sendJson(res, { ok: false, code: 'METHOD_NOT_ALLOWED', error: `不支持的 HTTP 方法：${httpMethod}` }, 405);
+    }
+    if (!isSameOriginRequest(req, allowedOrigins)) {
+      return sendJson(res, { ok: false, code: 'FORBIDDEN_ORIGIN', error: '拒绝跨站请求（Origin 校验未通过）' }, 403);
+    }
+    if (httpMethod === 'OPTIONS') {
+      res.writeHead(204, { 'cache-control': 'no-store' });
+      res.end();
+      return;
+    }
+
     let url;
     try {
       url = new URL(req.url ?? '/', 'http://localhost');

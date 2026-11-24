@@ -214,6 +214,7 @@ function mapFact(r) {
     sourceSeq: Number(r.source_seq),
     origin: r.origin,
     createdAt: Number(r.created_at),
+    sessionId: r.session_id ?? null,
   };
 }
 
@@ -268,7 +269,7 @@ function mapNote(r) {
 /**
  * 创建一套仓储方法。
  * @param {DatabaseSync | { db: DatabaseSync }} handle openDb() 的返回值，或裸 DatabaseSync
- * @returns {object} 严格实现 BUILD-PLAN.md §3.1 的接口
+ * @returns {Record<string, any>} 严格实现 BUILD-PLAN.md §3.1 的接口
  */
 export function createRepo(handle) {
   const db = handle instanceof DatabaseSync ? handle : handle?.db;
@@ -698,28 +699,36 @@ export function createRepo(handle) {
     const origin = required(fact, ['origin'], 'upsertFact');
     const sourceKind = param(field(fact, 'sourceKind', 'source_kind') ?? 'msg');
     const now = param(field(fact, 'createdAt', 'created_at') ?? Date.now());
+    const sessionId = param(field(fact, 'sessionId', 'session_id') ?? null);
 
     const id = field(fact, 'id');
     // SELECT + UPDATE/INSERT 是两条语句，放进同一个事务，避免并发下建出重复 fact
     return tx(() => {
-      const existing = id
-        ? stmt('SELECT id FROM fact WHERE id = ?').get(param(id))
-        : stmt('SELECT id FROM fact WHERE subject = ? AND key = ? ORDER BY id DESC LIMIT 1').get(subject, key);
+      let existing = null;
+      if (id) {
+        existing = stmt('SELECT id FROM fact WHERE id = ?').get(param(id));
+      } else if (sessionId !== null) {
+        existing = stmt('SELECT id FROM fact WHERE session_id = ? AND subject = ? AND key = ? ORDER BY id DESC LIMIT 1')
+          .get(sessionId, subject, key);
+      } else {
+        existing = stmt('SELECT id FROM fact WHERE session_id IS NULL AND subject = ? AND key = ? ORDER BY id DESC LIMIT 1')
+          .get(subject, key);
+      }
 
       if (existing) {
         stmt(
           `UPDATE fact SET subject = ?, key = ?, value = ?, source_kind = ?,
-               source_seq = ?, origin = ?
+               source_seq = ?, origin = ?, session_id = COALESCE(?, session_id)
            WHERE id = ?`,
-        ).run(subject, key, value, sourceKind, sourceSeq, origin, existing.id);
+        ).run(subject, key, value, sourceKind, sourceSeq, origin, sessionId, existing.id);
         return Number(existing.id);
       }
 
       const got = stmt(
-        `INSERT INTO fact (subject, key, value, source_kind, source_seq, origin, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO fact (subject, key, value, source_kind, source_seq, origin, created_at, session_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id`,
-      ).get(subject, key, value, sourceKind, sourceSeq, origin, now);
+      ).get(subject, key, value, sourceKind, sourceSeq, origin, now, sessionId);
       return Number(got.id);
     });
   }
@@ -728,9 +737,15 @@ export function createRepo(handle) {
    * 取某个 subject 下的事实，按创建时间倒序（新的先）。
    * @param {'me'|'her'|'us'} subject
    * @param {number} [limit] 默认 50
+   * @param {string|null} [sessionId] 可选会话过滤
    * @returns {object[]}
    */
-  function factsBySubject(subject, limit = 50) {
+  function factsBySubject(subject, limit = 50, sessionId = null) {
+    if (typeof sessionId === 'string' && sessionId.trim()) {
+      return stmt('SELECT * FROM fact WHERE session_id = ? AND subject = ? ORDER BY created_at DESC, id DESC LIMIT ?')
+        .all(param(sessionId.trim()), param(subject), param(limit ?? 50))
+        .map(mapFact);
+    }
     return stmt('SELECT * FROM fact WHERE subject = ? ORDER BY created_at DESC, id DESC LIMIT ?')
       .all(param(subject), param(limit ?? 50))
       .map(mapFact);

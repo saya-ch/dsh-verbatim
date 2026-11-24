@@ -213,6 +213,185 @@ export function readSessionFile(filePath) {
 }
 
 /**
+ * 增量读取会话日志：文件未缩水且追加了完整帧/行时，只读并解压 `[prevState.size, stat.size)` 尾部字节。
+ * 遇到文件缩小、截断、坏帧或非 zstd 帧边界时自动回退到全量 `readSessionFile`，保证结果与全量一致。
+ *
+ * @param {string} filePath
+ * @param {object|null} [prevState]
+ * @returns {{
+ *   header: object|null,
+ *   events: object[],
+ *   tailEvents: object[],
+ *   incremental: 'full' | 'hit' | 'tail',
+ *   prevSeqMax: number|null,
+ *   state: object,
+ *   stats: object,
+ * }}
+ */
+export function readSessionFileIncremental(filePath, prevState = null) {
+  const abs = path.resolve(filePath);
+  const stat = fs.statSync(abs);
+
+  if (
+    prevState
+    && prevState.absPath === abs
+    && stat.size === prevState.size
+    && stat.mtimeMs === prevState.mtimeMs
+  ) {
+    return {
+      header: prevState.header,
+      events: prevState.events,
+      tailEvents: [],
+      incremental: 'hit',
+      prevSeqMax: prevState.seqMax,
+      state: prevState,
+      stats: prevState.stats,
+    };
+  }
+
+  const buildFull = () => {
+    const full = readSessionFile(abs);
+    const state = {
+      absPath: abs,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      header: full.header,
+      events: full.events,
+      seqMax: full.stats.seqMax,
+      stats: full.stats,
+    };
+    return {
+      ...full,
+      tailEvents: full.events,
+      incremental: 'full',
+      prevSeqMax: null,
+      state,
+    };
+  };
+
+  if (
+    !prevState
+    || prevState.absPath !== abs
+    || prevState.size <= 0
+    || stat.size < prevState.size
+    || prevState.stats?.framesFailed > 0
+    || prevState.stats?.badLines > 0
+  ) {
+    return buildFull();
+  }
+
+  const delta = stat.size - prevState.size;
+  if (delta <= 0) return buildFull();
+
+  const tailBuf = Buffer.allocUnsafe(delta);
+  const fd = fs.openSync(abs, 'r');
+  let bytesRead = 0;
+  try {
+    while (bytesRead < delta) {
+      const n = fs.readSync(fd, tailBuf, bytesRead, delta - bytesRead, prevState.size + bytesRead);
+      if (n <= 0) break;
+      bytesRead += n;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (bytesRead !== delta) return buildFull();
+
+  let tailText;
+  let frameStats = { frames: 0, ok: 0, failed: 0, merged: 0 };
+  if (prevState.stats?.compressed) {
+    if (tailBuf.length < ZSTD_MAGIC.length || !tailBuf.subarray(0, ZSTD_MAGIC.length).equals(ZSTD_MAGIC)) {
+      return buildFull();
+    }
+    const r = decompressFrames(tailBuf);
+    if (r.stats.failed > 0 || r.stats.ok === 0) return buildFull();
+    tailText = r.text;
+    frameStats = r.stats;
+  } else {
+    tailText = tailBuf.toString('utf8');
+  }
+
+  const { events: tailRaw, badLines } = parseJsonLines(tailText);
+  if (badLines > 0) return buildFull();
+
+  let header = prevState.header;
+  const tailBody = [];
+  for (const ev of tailRaw) {
+    if (ev?.type === 'session' && typeof ev.seq !== 'number') {
+      if (!header) header = ev;
+      continue;
+    }
+    tailBody.push(ev);
+  }
+
+  const tailSorted = sortAndDedupeBySeq(tailBody);
+  const tailNumeric = tailSorted.events;
+  const prevSeqMax = prevState.seqMax;
+  const isStrictlyAppend = tailSorted.noSeq.length === 0
+    && (prevSeqMax === null || tailNumeric.length === 0 || tailNumeric[0].seq > prevSeqMax);
+
+  let mergedEvents;
+  let duplicates = prevState.stats.duplicates ?? 0;
+  let seqMin = prevState.stats.seqMin ?? null;
+  let seqMax = prevSeqMax;
+  let eventCount = prevState.stats.eventCount ?? 0;
+
+  if (isStrictlyAppend) {
+    const prevAll = prevState.events;
+    const prevLastHasSeq = prevAll.length === 0 || typeof prevAll[prevAll.length - 1]?.seq === 'number';
+    if (!prevLastHasSeq) return buildFull();
+    mergedEvents = prevAll.concat(tailNumeric);
+    duplicates += tailSorted.duplicates;
+    if (tailNumeric.length > 0) {
+      if (seqMin === null) seqMin = tailNumeric[0].seq;
+      seqMax = tailNumeric[tailNumeric.length - 1].seq;
+      eventCount += tailNumeric.length;
+    }
+  } else {
+    const combined = sortAndDedupeBySeq(prevState.events.concat(tailBody));
+    mergedEvents = combined.noSeq.length ? combined.events.concat(combined.noSeq) : combined.events;
+    duplicates = combined.duplicates;
+    seqMin = combined.events.length ? combined.events[0].seq : null;
+    seqMax = combined.events.length ? combined.events[combined.events.length - 1].seq : null;
+    eventCount = combined.events.length;
+  }
+
+  const nextStats = {
+    ...prevState.stats,
+    bytes: stat.size,
+    frames: (prevState.stats.frames ?? 0) + frameStats.frames,
+    framesOk: (prevState.stats.framesOk ?? 0) + frameStats.ok,
+    framesFailed: (prevState.stats.framesFailed ?? 0) + frameStats.failed,
+    framesMerged: (prevState.stats.framesMerged ?? 0) + frameStats.merged,
+    rawEvents: (prevState.stats.rawEvents ?? 0) + tailRaw.length,
+    badLines: (prevState.stats.badLines ?? 0) + badLines,
+    duplicates,
+    eventCount,
+    seqMin,
+    seqMax,
+  };
+  const nextState = {
+    absPath: abs,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    header,
+    events: mergedEvents,
+    seqMax,
+    stats: nextStats,
+  };
+  const tailEvents = tailSorted.noSeq.length ? tailNumeric.concat(tailSorted.noSeq) : tailNumeric;
+  return {
+    header,
+    events: mergedEvents,
+    tailEvents,
+    incremental: 'tail',
+    prevSeqMax,
+    state: nextState,
+    stats: nextStats,
+  };
+}
+
+/**
  * 列出 $DSH_HOME/sessions 下所有会话日志，方便批量导出。
  * 目录结构：sessions/<workspace-key>/<session-id>/session.v4.jsonl.zstd
  *

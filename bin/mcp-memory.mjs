@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 /**
  * MCP server —— 三个记忆工具的唯一对外出口。
  *
@@ -31,8 +32,9 @@ import { openDb, defaultDbPath } from '../src/store/db.js';
 import { createRepo, createExtras } from '../src/store/repo.js';
 import { createToolSet } from '../src/tools/index.js';
 import { loadGlobalConfig } from '../src/config/global-config.js';
-import { loadSessionConfig } from '../src/config/session-config.js';
+import { loadSessionConfig, sessionConfigPath } from '../src/config/session-config.js';
 import { importSession } from '../src/pipeline.js';
+import { createSessionLock } from '../src/host/session-lock.js';
 
 const VERSION = '0.1.0';
 const log = (...args) => console.error('[verbatim-mcp]', ...args);
@@ -130,14 +132,35 @@ try {
   ctx = null;
 }
 
-/* ───────────────────────── 增量同步 ───────────────────────── */
+/* ───────────────────────── 增量同步与会话配置热重载 ───────────────────────── */
 
 const syncedMtimes = new Map();
+const failedSyncAt = new Map();
+const readerCache = new Map();
+const mcpSessionLock = createSessionLock();
+const RETRY_COOLDOWN_MS = 5000;
 let syncing = null;
+let activeConfigKey = null;
+
+function sessionIdOfFile(filePath) {
+  return filePath ? path.basename(path.dirname(filePath)) : '';
+}
+
+function readConfigKey(filePath) {
+  const sid = sessionIdOfFile(filePath);
+  if (!sid) return `${filePath}|`;
+  const dshHome = process.env.DSH_HOME ?? undefined;
+  let cfgMtime = 0;
+  try {
+    const cfgPath = sessionConfigPath(sid, { dshHome });
+    if (fs.existsSync(cfgPath)) cfgMtime = fs.statSync(cfgPath).mtimeMs;
+  } catch { /* ignore */ }
+  return `${filePath}|${cfgMtime}`;
+}
 
 function buildToolsForSession(filePath) {
   if (!ctx) return { tools: [], close: () => {} };
-  const sid = filePath ? path.basename(path.dirname(filePath)) : '';
+  const sid = sessionIdOfFile(filePath);
   try {
     const cfg = loadSessionConfig(sid, { dshHome: process.env.DSH_HOME ?? undefined });
     return createToolSet({ ...ctx, config: cfg, sessionId: sid });
@@ -149,27 +172,37 @@ function buildToolsForSession(filePath) {
 
 let TOOL_SET = buildToolsForSession(sessionFile);
 let TOOLS = TOOL_SET.tools ?? [];
+activeConfigKey = readConfigKey(sessionFile);
 
 function refreshActiveSessionIfNeeded() {
-  if (!ctx || isPinned) return;
-  const latest = pickActiveSession();
-  if (latest && latest !== ctx.sessionFile) {
-    log(`检测到当前活跃会话切换：${ctx.sessionFile ?? '(none)'} → ${latest}`);
-    ctx.sessionFile = latest;
-    TOOL_SET = buildToolsForSession(latest);
+  if (!ctx) return;
+  const target = isPinned ? ctx.sessionFile : (pickActiveSession() || ctx.sessionFile);
+  if (!target) return;
+  const nextKey = readConfigKey(target);
+  if (target !== ctx.sessionFile || nextKey !== activeConfigKey) {
+    if (target !== ctx.sessionFile) {
+      log(`检测到当前活跃会话切换：${ctx.sessionFile ?? '(none)'} → ${target}`);
+    } else {
+      log(`检测到会话配置变更，热重载工具集：${sessionIdOfFile(target)}`);
+    }
+    try { TOOL_SET?.close?.(); } catch { /* ignore */ }
+    ctx.sessionFile = target;
+    TOOL_SET = buildToolsForSession(target);
     TOOLS = TOOL_SET.tools ?? [];
+    activeConfigKey = nextKey;
   }
 }
 
 /**
  * 保证库和会话日志一致。
- * 按 mtime 判断，避免每次调用都重读整个日志（大文件要一两秒）。
- * 并发调用共用同一个 promise，不会重复导入。
+ * 结合 mtime 与尾部增量解压（readerCache）避免每次全量重解大文件；
+ * 同步遇到瞬时错误（如 SQLITE_BUSY）时仅做短暂冷却，不永久跳过。
  */
 async function ensureFresh() {
   refreshActiveSessionIfNeeded();
   if (!autoSync || !ctx?.sessionFile) return;
   const targetFile = ctx.sessionFile;
+  const sid = sessionIdOfFile(targetFile);
   let stat;
   try {
     stat = fs.statSync(targetFile);
@@ -177,26 +210,32 @@ async function ensureFresh() {
     return; // 日志没了就跑现状，不要因为同步失败让工具挂掉
   }
   if (syncedMtimes.get(targetFile) === stat.mtimeMs) return;
+  const lastFail = failedSyncAt.get(targetFile);
+  if (lastFail && lastFail.mtimeMs === stat.mtimeMs && Date.now() - lastFail.at < RETRY_COOLDOWN_MS) {
+    return;
+  }
   if (syncing) return syncing;
 
-  syncing = (async () => {
+  syncing = mcpSessionLock.withLock(sid || targetFile, async () => {
     const t0 = Date.now();
     try {
       const r = await importSession(targetFile, {
         handle: ctx.handle,
         dshHome: process.env.DSH_HOME ?? undefined,
+        readerCache,
         quiet: true,
       });
       syncedMtimes.set(targetFile, stat.mtimeMs);
+      failedSyncAt.delete(targetFile);
       log(`同步完成 ${Date.now() - t0}ms：入库 ${r?.ingest?.inserted ?? '?'} 条`);
     } catch (e) {
-      // 同步失败不阻塞查询：查到的可能是稍旧的数据，但比报错好
-      log(`同步失败（继续用现有数据）：${e.message}`);
-      syncedMtimes.set(targetFile, stat.mtimeMs); // 别在同一个坏状态上反复重试
+      // 同步失败不阻塞查询，保留短暂冷却后允许自动重试
+      failedSyncAt.set(targetFile, { mtimeMs: stat.mtimeMs, at: Date.now() });
+      log(`同步失败（继续用现有数据，稍后自动重试）：${e.message}`);
     } finally {
       syncing = null;
     }
-  })();
+  });
   return syncing;
 }
 
@@ -280,6 +319,7 @@ rl.on('line', (line) => {
 });
 
 rl.on('close', () => {
+  try { TOOL_SET?.close?.(); } catch { /* ignore */ }
   try { ctx?.handle?.close?.(); } catch { /* 关不上也没关系，进程要退了 */ }
   process.exit(0);
 });

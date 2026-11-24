@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 场景索引 —— gist 生成
  *
@@ -524,7 +525,7 @@ function cosineDot(a, b) {
  * - 输出严格遵循 D-029 三段式（【发生了什么】/【原话】/【不懂的】），
  *   既可直接嵌入 `vec_scene` 做整场语义召回，又可供时间轴提取一句话目录标题。
  *
- * @param {object[]} msgs 场景内消息（按时间升序）
+ * @param {Array<Record<string, any>>} msgs 场景内消息（按时间升序）
  * @param {{vectors?: Map<number, Float32Array>|Function|null}} [opts]
  * @returns {string|null}
  */

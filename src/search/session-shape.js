@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 会话形态判别 —— 曾用于决定 `vec_window`（对话窗向量）的召回配额。
  *
@@ -22,7 +23,7 @@ export const COMPANION_AVG_CHARS = 60;
 /**
  * 判别会话形态。
  *
- * @param {object} handle openDb() 的返回值
+ * @param {{ db?: import('node:sqlite').DatabaseSync } | import('node:sqlite').DatabaseSync | any} handle openDb() 的返回值
  * @param {string} sessionId
  * @returns {{
  *   shape: 'companion' | 'technical' | 'unknown',
@@ -30,6 +31,7 @@ export const COMPANION_AVG_CHARS = 60;
  *   medianChars: number,
  *   msgCount: number,
  *   useWindow: boolean,
+ *   windowQuota?: number,
  *   reason: string,
  * }}
  */
