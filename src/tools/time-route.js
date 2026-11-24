@@ -34,6 +34,7 @@ import {
   libraryLine,
   parseLeadIn,
   quoteLine,
+  resolveTzOffsetMs,
   sceneHeader,
   shanghaiParts,
   startOfDay,
@@ -58,24 +59,25 @@ const MAX_LIMIT = 12;
  * @param {number} d
  * @returns {number|null} 日期不存在时返回 null（比如 2 月 30 日）
  */
-function makeDay(y, mo, d) {
+function makeDay(y, mo, d, tzOffsetMs) {
   if (!(mo >= 1 && mo <= 12) || !(d >= 1 && d <= 31)) return null;
   const utcMidnight = Date.UTC(y, mo - 1, d);
   const probe = new Date(utcMidnight);
   if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) {
     return null; // 溢出了：02-30 之类
   }
-  return utcMidnight - TZ_OFFSET_MS;
+  return utcMidnight - resolveTzOffsetMs(tzOffsetMs);
 }
 
 /**
  * 解析带时刻的 ISO 字符串（`YYYY-MM-DDTHH:mm...` / `YYYY-MM-DD HH:mm...`）。
- * 无时区后缀时默认按上海时间（+08:00）解释，不依赖机器本地时区。
+ * 无时区后缀时默认按配置的时区偏移（默认上海时间 +08:00）解释，不依赖机器本地时区。
  *
  * @param {string} text
+ * @param {number} [tzOffsetMs]
  * @returns {number|null}
  */
-function parseIsoWithTime(text) {
+function parseIsoWithTime(text, tzOffsetMs) {
   const iso =
     /^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:?\d{2})?$/i.exec(
       text,
@@ -88,10 +90,10 @@ function parseIsoWithTime(text) {
   const mi = Number(iso[5]);
   const s = iso[6] !== undefined ? Number(iso[6]) : 0;
   const ms = iso[7] !== undefined ? Number(iso[7].padEnd(3, '0').slice(0, 3)) : 0;
-  if (makeDay(y, mo, d) === null) return null;
+  if (makeDay(y, mo, d, tzOffsetMs) === null) return null;
   if (h > 23 || mi > 59 || s > 59) return null;
 
-  let offsetMs = TZ_OFFSET_MS;
+  let offsetMs = resolveTzOffsetMs(tzOffsetMs);
   if (iso[8]) {
     const tz = iso[8].toUpperCase();
     if (tz === 'Z') {
@@ -109,17 +111,18 @@ function parseIsoWithTime(text) {
 }
 
 /**
- * 解析上海本地纯日期：`YYYY-MM-DD` / `YYYY/MM/DD` / `MM-DD` / `MM/DD`。
+ * 解析纯日期：`YYYY-MM-DD` / `YYYY/MM/DD` / `MM-DD` / `MM/DD`。
  * `MM-DD` / `MM/DD` 落在未来时回退一年。
  *
  * @param {string} text
  * @param {number} nowTs
+ * @param {number} [tzOffsetMs]
  * @returns {{day: number, hasYear: boolean}|null}
  */
-function parsePureDate(text, nowTs) {
+function parsePureDate(text, nowTs, tzOffsetMs) {
   let m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text);
   if (m) {
-    const day = makeDay(Number(m[1]), Number(m[2]), Number(m[3]));
+    const day = makeDay(Number(m[1]), Number(m[2]), Number(m[3]), tzOffsetMs);
     return day !== null ? { day, hasYear: true } : null;
   }
 
@@ -127,9 +130,9 @@ function parsePureDate(text, nowTs) {
   if (m) {
     const mo = Number(m[1]);
     const d = Number(m[2]);
-    const year = shanghaiParts(nowTs).y;
-    let day = makeDay(year, mo, d);
-    if (day !== null && day > startOfDay(nowTs)) day = makeDay(year - 1, mo, d);
+    const year = shanghaiParts(nowTs, tzOffsetMs).y;
+    let day = makeDay(year, mo, d, tzOffsetMs);
+    if (day !== null && day > startOfDay(nowTs, tzOffsetMs)) day = makeDay(year - 1, mo, d, tzOffsetMs);
     return day !== null ? { day, hasYear: false } : null;
   }
 
@@ -140,36 +143,38 @@ function parsePureDate(text, nowTs) {
  * 解析单月：`YYYY-MM` / `YYYY/MM`（校验月份 1..12）。
  *
  * @param {string} text
+ * @param {number} [tzOffsetMs]
  * @returns {{start: number, end: number, label: string}|null}
  */
-function parseYearMonth(text) {
+function parseYearMonth(text, tzOffsetMs) {
   const m = /^(\d{4})[-/](\d{1,2})$/.exec(text);
   if (!m) return null;
   const y = Number(m[1]);
   const mo = Number(m[2]);
   if (!(mo >= 1 && mo <= 12)) return null;
-  const start = makeDay(y, mo, 1);
-  const end = mo === 12 ? makeDay(y + 1, 1, 1) : makeDay(y, mo + 1, 1);
+  const start = makeDay(y, mo, 1, tzOffsetMs);
+  const end = mo === 12 ? makeDay(y + 1, 1, 1, tzOffsetMs) : makeDay(y, mo + 1, 1, tzOffsetMs);
   if (start === null || end === null) return null;
   return { start, end, label: `${y}-${String(mo).padStart(2, '0')}` };
 }
 
 /**
- * 解析区间 `A..B` 的单侧端点（全部按上海时区 UTC+8，左闭右开 `[from, to)`）。
+ * 解析区间 `A..B` 的单侧端点（左闭右开 `[from, to)`）。
  *
  * @param {string} text
  * @param {boolean} isEnd
  * @param {number} nowTs
+ * @param {number} [tzOffsetMs]
  * @returns {number|null}
  */
-function parseEndpoint(text, isEnd, nowTs) {
-  const pure = parsePureDate(text, nowTs);
+function parseEndpoint(text, isEnd, nowTs, tzOffsetMs) {
+  const pure = parsePureDate(text, nowTs, tzOffsetMs);
   if (pure) return isEnd ? pure.day + DAY_MS : pure.day;
 
-  const ym = parseYearMonth(text);
+  const ym = parseYearMonth(text, tzOffsetMs);
   if (ym) return isEnd ? ym.end : ym.start;
 
-  const isoTs = parseIsoWithTime(text);
+  const isoTs = parseIsoWithTime(text, tzOffsetMs);
   if (isoTs !== null) return isoTs;
 
   if (/^\d{10,13}$/.test(text)) {
@@ -182,21 +187,15 @@ function parseEndpoint(text, isEnd, nowTs) {
 }
 
 /**
- * 标准化 `when` 参数 → `[from, to)` 区间（上海时区 UTC+8）。
- *
- * 支持：
- *   - 留空 / 空白串 → `{ kind: 'latest', from: null, to: null, label: '最近一次聊天' }`
- *   - 相对天数：`7d` / `last:7d` / `30d`（正整数）
- *   - 单月：`2026-11` / `2026/11`
- *   - 区间：`2026-11-09..2026-11-12` / `..2026-11-12` / `2026-11-09..`
- *   - 单日：`2026-11-09` / `2026/11/09` / `11-09` / `11/09`（以及带时刻 ISO / epoch ms 所在自然日）
- *   - 其他（含中文自然语言）→ `kind: 'unknown'`
+ * 标准化 `when` 参数 → `[from, to)` 区间（默认上海时区 UTC+8，支持配置覆盖）。
  *
  * @param {string} when
  * @param {number} [now]
+ * @param {{tzOffsetMs?: number}} [opts]
  * @returns {{kind:'day'|'span'|'range'|'latest'|'unknown', from:number|null, to:number|null, label:string}}
  */
-export function parseWhen(when, now = Date.now()) {
+export function parseWhen(when, now = Date.now(), opts = {}) {
+  const tzOffsetMs = resolveTzOffsetMs(opts?.tzOffsetMs);
   const raw = String(when ?? '').trim();
   const nowTs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
 
@@ -209,8 +208,8 @@ export function parseWhen(when, now = Date.now()) {
     if (Number.isInteger(n) && n >= 1) {
       return {
         kind: 'span',
-        from: dayShift(nowTs, -(n - 1)),
-        to: dayShift(nowTs, 1),
+        from: dayShift(nowTs, -(n - 1), tzOffsetMs),
+        to: dayShift(nowTs, 1, tzOffsetMs),
         label: `最近 ${n} 天`,
       };
     }
@@ -225,8 +224,8 @@ export function parseWhen(when, now = Date.now()) {
     if (!leftText && !rightText) {
       return { kind: 'unknown', from: null, to: null, label: raw };
     }
-    const startVal = leftText ? parseEndpoint(leftText, false, nowTs) : null;
-    const endVal = rightText ? parseEndpoint(rightText, true, nowTs) : null;
+    const startVal = leftText ? parseEndpoint(leftText, false, nowTs, tzOffsetMs) : null;
+    const endVal = rightText ? parseEndpoint(rightText, true, nowTs, tzOffsetMs) : null;
     if ((leftText && startVal === null) || (rightText && endVal === null)) {
       return { kind: 'unknown', from: null, to: null, label: raw };
     }
@@ -235,49 +234,49 @@ export function parseWhen(when, now = Date.now()) {
       const from = 0;
       const to = endVal;
       if (!(to > from)) return { kind: 'unknown', from: null, to: null, label: raw };
-      return { kind: 'range', from, to, label: `截至 ${fmtDate(endVal - 1)}` };
+      return { kind: 'range', from, to, label: `截至 ${fmtDate(endVal - 1, tzOffsetMs)}` };
     }
     if (!rightText) {
       const from = startVal;
-      const to = dayShift(nowTs, 1);
+      const to = dayShift(nowTs, 1, tzOffsetMs);
       if (!(to > from)) return { kind: 'unknown', from: null, to: null, label: raw };
-      return { kind: 'range', from, to, label: `${fmtDate(startVal)} 起` };
+      return { kind: 'range', from, to, label: `${fmtDate(startVal, tzOffsetMs)} 起` };
     }
 
     const from = startVal;
     const to = endVal;
     if (!(to > from)) return { kind: 'unknown', from: null, to: null, label: raw };
-    return { kind: 'range', from, to, label: fmtSpan(from, to - 1) };
+    return { kind: 'range', from, to, label: fmtSpan(from, to - 1, tzOffsetMs) };
   }
 
   // 3. 单月：YYYY-MM / YYYY/MM
-  const ym = parseYearMonth(raw);
+  const ym = parseYearMonth(raw, tzOffsetMs);
   if (ym) {
     return { kind: 'range', from: ym.start, to: ym.end, label: ym.label };
   }
 
   // 4. 单日：YYYY-MM-DD / YYYY/MM/DD / MM-DD / MM/DD
-  const pure = parsePureDate(raw, nowTs);
+  const pure = parsePureDate(raw, nowTs, tzOffsetMs);
   if (pure) {
     return {
       kind: 'day',
       from: pure.day,
       to: pure.day + DAY_MS,
-      label: pure.hasYear ? fmtLongDate(pure.day) : fmtDate(pure.day),
+      label: pure.hasYear ? fmtLongDate(pure.day, tzOffsetMs) : fmtDate(pure.day, tzOffsetMs),
     };
   }
 
-  // 5. 带时刻 ISO 或 epoch ms 单值传入 → 取该时刻所在上海自然日
-  const isoTs = parseIsoWithTime(raw);
+  // 5. 带时刻 ISO 或 epoch ms 单值传入 → 取该时刻所在自然日
+  const isoTs = parseIsoWithTime(raw, tzOffsetMs);
   if (isoTs !== null) {
-    const day = startOfDay(isoTs);
-    return { kind: 'day', from: day, to: day + DAY_MS, label: fmtLongDate(day) };
+    const day = startOfDay(isoTs, tzOffsetMs);
+    return { kind: 'day', from: day, to: day + DAY_MS, label: fmtLongDate(day, tzOffsetMs) };
   }
   if (/^\d{10,13}$/.test(raw)) {
     const ms = Number(raw);
     if (Number.isFinite(ms)) {
-      const day = startOfDay(ms);
-      return { kind: 'day', from: day, to: day + DAY_MS, label: fmtLongDate(day) };
+      const day = startOfDay(ms, tzOffsetMs);
+      return { kind: 'day', from: day, to: day + DAY_MS, label: fmtLongDate(day, tzOffsetMs) };
     }
   }
 
@@ -289,12 +288,13 @@ export function parseWhen(when, now = Date.now()) {
  *
  * @param {{when?: string}} args
  * @param {number} [now]
+ * @param {{tzOffsetMs?: number}} [opts]
  * @returns {{kind:'day'|'span'|'range'|'latest'|'unknown', from:number|null, to:number|null,
  *            label:string, explicit:boolean}}
  */
-export function resolveTimeWindow(args = {}, now = Date.now()) {
+export function resolveTimeWindow(args = {}, now = Date.now(), opts = {}) {
   const when = typeof args?.when === 'string' ? args.when : args?.when == null ? '' : String(args.when);
-  const parsed = parseWhen(when, now);
+  const parsed = parseWhen(when, now, opts);
   return { ...parsed, explicit: parsed.kind !== 'latest' };
 }
 

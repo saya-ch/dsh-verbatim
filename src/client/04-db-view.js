@@ -67,7 +67,7 @@
         }
         setDbMediaPreviews((prev) => ({ ...prev, [key]: { loading: true } }));
         try {
-          const res = await rpcRead('mediaPreview', { id: mediaId });
+          const res = await rpcRead('mediaPreview', dbSession ? { id: mediaId, sessionId: dbSession } : { id: mediaId });
           if (!mounted.current) return;
           setDbMediaPreviews((prev) => ({ ...prev, [key]: res }));
         } catch (e) {
@@ -81,7 +81,7 @@
         const text = typeof captionDrafts[key] === 'string' ? captionDrafts[key] : String(fallbackCaption ?? '');
         setCaptionBusyId(mediaId);
         try {
-          await rpcWrite('setMediaCaption', { id: mediaId, caption: text });
+          await rpcWrite('setMediaCaption', dbSession ? { id: mediaId, sessionId: dbSession, caption: text } : { id: mediaId, caption: text });
           if (!mounted.current) return;
           await loadDbRows();
         } catch (e) {

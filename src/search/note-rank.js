@@ -7,7 +7,46 @@
 export const NOTE_MIN_SCORE_DEFAULT = 0.58;
 export const PINNED_NOTE_MAX_DEFAULT = 3;
 
-const NOTE_PROBE_LIMIT = 500;
+const NOTE_FALLBACK_PAGE = 500;
+const NOTE_MAX_SCAN = 20_000;
+
+/**
+ * 读取全部（或时间范围内）的候选笔记：
+ * - 若有 `extras.note.searchKeyword` 且给出 query，则由 SQLite `LIKE` 预过滤，不受 500 条截断；
+ * - 若无 `searchKeyword`（轻量测试 mock）或无 query，则按分页拉取直到上限，同时下推 `from`/`to`。
+ */
+function fetchCandidateNotes({ extras, sessionId, query, from, to, limit }) {
+  const noteApi = extras?.note;
+  if (!noteApi) return [];
+  const q = String(query ?? '').trim();
+  const hasRange = Number.isFinite(from) && Number.isFinite(to);
+
+  if (q && typeof noteApi.searchKeyword === 'function') {
+    const terms = [q, ...splitTerms(q)];
+    return noteApi.searchKeyword({
+      sessionId,
+      from: hasRange ? from : null,
+      to: hasRange ? to : null,
+      terms,
+      limit: Math.max(2000, limit),
+    });
+  }
+
+  if (typeof noteApi.list !== 'function') return [];
+
+  // 无 query 时如果只要前 limit 条，没必要全量拉；有 query（仅 mock list）时分页扫全库
+  const wantCap = q ? NOTE_MAX_SCAN : Math.max(NOTE_FALLBACK_PAGE, limit);
+  const first = noteApi.list({
+    limit: wantCap,
+    sessionId,
+    ...(hasRange ? { from, to } : {}),
+  });
+  let pool = Array.isArray(first) ? first : [];
+  if (hasRange) {
+    pool = pool.filter((n) => Number(n.at) >= from && Number(n.at) < to);
+  }
+  return pool;
+}
 
 /** 与 FTS/keyword 共用的基础切词（按标点与空白拆词） */
 function splitTerms(raw) {
@@ -107,14 +146,13 @@ export async function searchRankedNotes(opts) {
   let queryVec = opts.queryVec ?? null;
 
   const q = String(query ?? '').trim();
-  const all = extras?.note?.list
-    ? extras.note.list({ limit: Math.max(NOTE_PROBE_LIMIT, limit), sessionId })
-    : [];
+  const hasRange = Number.isFinite(from) && Number.isFinite(to);
+  const pool = fetchCandidateNotes({ extras, sessionId, query: q, from, to, limit });
 
-  let pool = all;
-  if (Number.isFinite(from) && Number.isFinite(to)) {
-    pool = pool.filter((n) => Number(n.at) >= from && Number(n.at) < to);
-  }
+  // 懒补向量时需要最近笔记列表（无 query 命中时 pool 已经是最新笔记）
+  const embedPool = q && pool.length === 0 && typeof extras?.note?.list === 'function'
+    ? extras.note.list({ limit: 64, sessionId, ...(hasRange ? { from, to } : {}) })
+    : pool;
 
   if (!q) {
     return { hits: pool.slice(0, limit), totalMatched: pool.length, semanticUsed: false, queryVec };
@@ -137,7 +175,7 @@ export async function searchRankedNotes(opts) {
   let semanticUsed = false;
   if (store && typeof store.knnNote === 'function' && (queryVec || (provider && typeof provider.embed === 'function'))) {
     try {
-      await ensureNoteVectors({ store, provider, pool });
+      await ensureNoteVectors({ store, provider, pool: embedPool });
       if (store.countNoteVec() > 0) {
         if (!queryVec && provider) {
           const [v] = await provider.embed([q]);

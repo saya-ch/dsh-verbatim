@@ -119,11 +119,11 @@ flowchart LR
   Chat["DSH Messages & Attachments"] -->|"Verbatim ingest"| Msg["msg table"]
   Msg -->|"Companion split"| Gran["exchange / thread"]
   Gran -->|"Hybrid index"| Index["FTS5 + Multi-granularity Vectors"]
-  Index -->|"RRF + Optional Rerank"| Tools["Agent Tools (search / around / timeline)"]
+  Index -->|"RRF + Optional Rerank"| Tools["Agent Tools (search / remember / forget)"]
   Tools -->|"Privacy-filtered"| Model["Active Chat Model"]
 ```
 
-The plugin registers the ingest pipeline, search service, and 3 read-only Agent tools (`memory_search`, `memory_around`, `memory_timeline`) on the Host side, and injects the 6-view sidebar panel and 5-tab settings page on the Client side—without modifying DeepSeek Harness core files. See [Architecture](docs/ARCHITECTURE.md) for schema and lock details.
+The plugin registers the ingest pipeline, search service, and 3 Agent tools (`memory_search`, `memory_remember`, `memory_forget`; verbatim conversation rows remain strictly append-only/read-only to all tools) on the Host side, and injects the 6-view sidebar panel and 5-tab settings page on the Client side—without modifying DeepSeek Harness core files. See [Architecture](docs/ARCHITECTURE.md) for schema and lock details.
 
 ## Privacy & Security
 

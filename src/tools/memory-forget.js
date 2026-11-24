@@ -105,10 +105,18 @@ function retentionHint(deletedAt, now) {
  *  **按会话数**（A1）：不能把别的会话的笔记条数说出来。 */
 function noteInventory(extras, sessionId = null) {
   try {
-    const live = extras.note.list({ limit: 500, sessionId });
-    if (live.length > 0) return `你目前一共 ${live.length} 条笔记，最新的编号是 #${live[0].id}。`;
-    const all = extras.note.list({ limit: 500, includeDeleted: true, sessionId });
-    if (all.length > 0) return `你现在没有未删的笔记（回收站里还有 ${all.length} 条）。`;
+    const liveCount = typeof extras.note.count === 'function'
+      ? extras.note.count({ sessionId })
+      : null;
+    const latestLive = extras.note.list({ limit: 1, sessionId });
+    const totalLive = liveCount !== null ? liveCount : latestLive.length;
+    if (totalLive > 0 && latestLive.length > 0) {
+      return `你目前一共 ${totalLive} 条笔记，最新的编号是 #${latestLive[0].id}。`;
+    }
+    const deletedCount = typeof extras.note.count === 'function'
+      ? extras.note.count({ sessionId, deletedOnly: true })
+      : extras.note.list({ limit: 500, includeDeleted: true, sessionId }).length;
+    if (deletedCount > 0) return `你现在没有未删的笔记（回收站里还有 ${deletedCount} 条）。`;
     return '你目前一条笔记都没记过。';
   } catch {
     return '';

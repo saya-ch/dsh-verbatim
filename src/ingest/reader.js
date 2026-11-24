@@ -48,6 +48,9 @@ export function findFrameStarts(buf) {
  * @param {Buffer} buf
  * @returns {{ text: string, stats: { frames: number, ok: number, failed: number, merged: number } }}
  */
+/** 遇到坏帧时最多向后合并探测多少个候选 magic（防止坏文件触发 O(N²) 解压退化） */
+const MAX_FRAME_MERGE = 16;
+
 export function decompressFrames(buf) {
   const starts = findFrameStarts(buf);
   const chunks = [];
@@ -59,8 +62,8 @@ export function decompressFrames(buf) {
   while (i < starts.length) {
     let j = i + 1;
     let done = false;
-    // j 允许取到 starts.length，表示「一直吃到文件末尾」
-    while (j <= starts.length) {
+    const maxEndIdx = Math.min(starts.length, i + MAX_FRAME_MERGE);
+    while (j <= maxEndIdx) {
       const end = j < starts.length ? starts[j] : buf.length;
       try {
         const out = zlib.zstdDecompressSync(buf.subarray(starts[i], end));

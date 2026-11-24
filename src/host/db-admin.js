@@ -452,6 +452,7 @@ export function createDbAdmin({
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
       .replace(/"(?:""|[^"])*"/g, '""')
       .replace(/`(?:``|[^`])*`/g, '``')
+      .replace(/\[[^\]]*\]/g, '[]')
       .replace(/'(?:''|[^'])*'/g, "''");
 
     if (stripped.includes(';')) {
@@ -473,13 +474,25 @@ export function createDbAdmin({
 
     const limit = intParam(params.limit, 'limit', { def: 50, min: 1, max: 200 });
     const t0 = Date.now();
-    let allRows;
+    const collected = [];
+    let truncated = false;
+
+    const runBounded = (conn) => {
+      const s = conn.prepare(sql);
+      for (const r of s.iterate()) {
+        if (collected.length >= limit) {
+          truncated = true;
+          break;
+        }
+        collected.push({ ...r });
+      }
+    };
 
     if (dbPath && dbPath !== ':memory:' && fs.existsSync(dbPath)) {
       const ro = new DatabaseSync(dbPath, { readOnly: true });
       try {
-        ro.exec('PRAGMA busy_timeout = 3000');
-        allRows = ro.prepare(sql).all();
+        ro.exec('PRAGMA busy_timeout = 3000; PRAGMA query_only = ON');
+        runBounded(ro);
       } catch (e) {
         throw new PanelError('SQL_ERROR', `SQL 执行失败：${e?.message ?? e}`, 400);
       } finally {
@@ -488,7 +501,7 @@ export function createDbAdmin({
     } else {
       db.exec('PRAGMA query_only = ON');
       try {
-        allRows = db.prepare(sql).all();
+        runBounded(db);
       } catch (e) {
         throw new PanelError('SQL_ERROR', `SQL 执行失败：${e?.message ?? e}`, 400);
       } finally {
@@ -496,13 +509,11 @@ export function createDbAdmin({
       }
     }
 
-    const truncated = allRows.length > limit;
-    const rows = allRows.slice(0, limit).map((r) => ({ ...r }));
-    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+    const columns = collected.length > 0 ? Object.keys(collected[0]) : [];
     return {
       columns,
-      rows,
-      rowCount: allRows.length,
+      rows: collected,
+      rowCount: collected.length,
       truncated,
       elapsedMs: Date.now() - t0,
     };

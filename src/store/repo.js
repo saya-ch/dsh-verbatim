@@ -913,6 +913,14 @@ export function createExtras(handle) {
         where.push('about = ?');
         args.push(opts.about);
       }
+      if (Number.isFinite(opts.from)) {
+        where.push('at >= ?');
+        args.push(Number(opts.from));
+      }
+      if (Number.isFinite(opts.to)) {
+        where.push('at < ?');
+        args.push(Number(opts.to));
+      }
       if (deletedOnly) where.push('deleted_at IS NOT NULL');
       else if (!includeDeleted) where.push('deleted_at IS NULL');
       const orderBy = deletedOnly ? ' ORDER BY deleted_at DESC, id DESC' : ' ORDER BY at DESC, id DESC';
@@ -926,9 +934,54 @@ export function createExtras(handle) {
     },
 
     /**
+     * 按关键词（LIKE 预过滤）检索笔记，突破旧版 500 条内存扫描上限。
+     *
+     * @param {{sessionId?: string|null, from?: number|null, to?: number|null,
+     *          terms?: string[], query?: string, limit?: number, offset?: number}} [opts]
+     */
+    searchKeyword(opts = {}) {
+      const limit = p(opts.limit ?? 1000);
+      const offset = p(opts.offset ?? 0);
+      const where = ['deleted_at IS NULL'];
+      const args = [];
+      if (opts.sessionId) {
+        where.push('session_id = ?');
+        args.push(opts.sessionId);
+      }
+      if (Number.isFinite(opts.from)) {
+        where.push('at >= ?');
+        args.push(Number(opts.from));
+      }
+      if (Number.isFinite(opts.to)) {
+        where.push('at < ?');
+        args.push(Number(opts.to));
+      }
+      const rawTerms = Array.isArray(opts.terms) ? opts.terms : [];
+      const cleanTerms = [...new Set(rawTerms.map((t) => String(t ?? '').trim()).filter(Boolean))];
+      if (opts.query && String(opts.query).trim()) {
+        const q = String(opts.query).trim();
+        if (!cleanTerms.includes(q)) cleanTerms.unshift(q);
+      }
+      if (cleanTerms.length > 0) {
+        const orParts = [];
+        for (const term of cleanTerms) {
+          orParts.push("LOWER(content) LIKE '%' || LOWER(?) || '%'");
+          args.push(term);
+        }
+        where.push(`(${orParts.join(' OR ')})`);
+      }
+      const sql =
+        `SELECT * FROM note WHERE ${where.join(' AND ')} ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`;
+      return stmt(sql)
+        .all(...args, limit, offset)
+        .map(mapNote);
+    },
+
+    /**
      * 统计匹配的笔记条数（供面板统计回收站数量）。
      *
-     * @param {{sessionId?: string|null, deletedOnly?: boolean, includeDeleted?: boolean}} [opts]
+     * @param {{sessionId?: string|null, from?: number|null, to?: number|null,
+     *          deletedOnly?: boolean, includeDeleted?: boolean}} [opts]
      * @returns {number}
      */
     count(opts = {}) {
@@ -939,6 +992,14 @@ export function createExtras(handle) {
       if (opts.sessionId) {
         where.push('session_id = ?');
         args.push(opts.sessionId);
+      }
+      if (Number.isFinite(opts.from)) {
+        where.push('at >= ?');
+        args.push(Number(opts.from));
+      }
+      if (Number.isFinite(opts.to)) {
+        where.push('at < ?');
+        args.push(Number(opts.to));
       }
       if (deletedOnly) where.push('deleted_at IS NOT NULL');
       else if (!includeDeleted) where.push('deleted_at IS NULL');

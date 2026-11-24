@@ -81,6 +81,23 @@ function sniffImageMime(buf) {
   return null;
 }
 
+function safeRealPath(targetPath) {
+  try {
+    return fs.realpathSync(targetPath);
+  } catch {
+    return path.resolve(targetPath);
+  }
+}
+
+function isInsideRoot(targetPath, rootPath) {
+  if (!rootPath) return false;
+  const target = safeRealPath(targetPath);
+  const root = safeRealPath(rootPath);
+  const norm = (s) => (process.platform === 'win32' ? s.toLowerCase() : s);
+  const rel = path.relative(norm(root), norm(target));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 export function createSceneOps({
   handle,
   db,
@@ -96,6 +113,7 @@ export function createSceneOps({
   makeEmbeddingProvider,
   noteHasSessionColumn,
   dshHome = '',
+  dbRoot = '',
   logger = console,
 }) {
   /** 将指定场景与其上一场（preceded_by）合并为一场，并置 locked=1 */
@@ -314,11 +332,30 @@ export function createSceneOps({
     return { ok: true, sceneId, gist: gr.gist, gistSource: 'llm', vectorized };
   }
 
-  /** 安全读取已登记在 media 表中的本地图片为 data URL（防任意文件读取） */
+  function assertMediaOwnership(mediaId, params) {
+    const sid = typeof params?.sessionId === 'string' && params.sessionId.trim()
+      ? params.sessionId.trim()
+      : null;
+    if (!sid) return;
+    try {
+      const owner = stmt(
+        'SELECT m.session_id AS sessionId FROM media md JOIN msg m ON m.id = md.msg_id WHERE md.id = ?',
+      ).get(mediaId);
+      if (!owner || String(owner.sessionId) !== sid) {
+        throw new PanelError('MEDIA_NOT_FOUND', `找不到媒体记录 #${mediaId}`, 404);
+      }
+    } catch (e) {
+      if (e instanceof PanelError) throw e;
+      throw new PanelError('MEDIA_NOT_FOUND', `找不到媒体记录 #${mediaId}`, 404);
+    }
+  }
+
+  /** 安全读取已登记在 media 表中的本地图片为 data URL（防任意文件读取与跨会话越权） */
   function mediaPreview(params) {
     const id = intParam(params.id, 'id', { min: 1 });
     const row = extras?.media?.byId ? extras.media.byId(id) : null;
     if (!row) throw new PanelError('MEDIA_NOT_FOUND', `找不到媒体记录 #${id}`, 404);
+    assertMediaOwnership(id, params);
     const rawPath = String(row.path || '');
     if (/^https?:\/\//i.test(rawPath)) {
       return { ok: true, id, kind: 'url', url: rawPath, width: row.width, height: row.height, caption: row.caption };
@@ -345,6 +382,10 @@ export function createSceneOps({
     } catch {
       return { ok: false, id, kind: 'missing', reason: '本地图片文件已不存在或无法访问' };
     }
+    const allowedRoots = [dshHome, dbRoot].filter(Boolean);
+    if (allowedRoots.length > 0 && !allowedRoots.some((root) => isInsideRoot(p, root))) {
+      return { ok: false, id, kind: 'forbidden', reason: '本地图片路径超出允许目录范围（仅允许 DSH 资源目录内文件）' };
+    }
     if (!stat.isFile() || stat.size > MAX_PREVIEW_BYTES) {
       return { ok: false, id, kind: 'too_large', reason: '文件过大（超过 5MB）或不是普通文件' };
     }
@@ -366,26 +407,50 @@ export function createSceneOps({
     };
   }
 
-  /** 扫描当前会话高度相似/重复的笔记分组 */
+  /** 扫描当前会话高度相似/重复的笔记分组（支持 >500 条笔记，倒排索引候选剪枝避免 O(N²) 退化） */
   function findDuplicateNotes(params) {
     const sessionId = requireSession('findDuplicateNotes', params);
     const rawTh = Number(params.threshold);
     const threshold = Number.isFinite(rawTh) && rawTh >= 0.4 && rawTh <= 0.99 ? rawTh : 0.62;
+    const scanLimit = 5000;
     const notes = noteHasSessionColumn()
-      ? extras.note.list({ sessionId, limit: 500 })
-      : extras.note.list({ limit: 500 });
+      ? extras.note.list({ sessionId, limit: scanLimit })
+      : extras.note.list({ limit: scanLimit });
     if (notes.length < 2) return { groups: [], scanned: notes.length };
 
     // 按时间倒序：默认保留最新的一条作为主笔记
     const sorted = [...notes].sort((a, b) => b.at - a.at || b.id - a.id);
     const grams = sorted.map((n) => bigramsOf(n.content));
+
+    // 用 bigram 倒排索引筛选共享至少 1 个 bigram 的候选对，避免全量 O(N²) 集合求交
+    const posting = new Map();
+    for (let i = 0; i < grams.length; i++) {
+      for (const g of grams[i]) {
+        let bucket = posting.get(g);
+        if (!bucket) {
+          bucket = [];
+          posting.set(g, bucket);
+        }
+        bucket.push(i);
+      }
+    }
+
     const visited = new Set();
     const groups = [];
 
     for (let i = 0; i < sorted.length; i++) {
       if (visited.has(sorted[i].id)) continue;
+      const candIdx = new Set();
+      for (const g of grams[i]) {
+        const bucket = posting.get(g);
+        if (!bucket || bucket.length > 250) continue;
+        for (const j of bucket) {
+          if (j > i) candIdx.add(j);
+        }
+      }
+      const candidates = [...candIdx].sort((a, b) => a - b);
       const dups = [];
-      for (let j = i + 1; j < sorted.length; j++) {
+      for (const j of candidates) {
         if (visited.has(sorted[j].id)) continue;
         const sim = jaccardSim(grams[i], grams[j]);
         if (sim >= threshold) {
@@ -521,6 +586,7 @@ export function createSceneOps({
     const id = intParam(params.id, 'id', { min: 1 });
     const row = extras?.media?.byId ? extras.media.byId(id) : null;
     if (!row) throw new PanelError('MEDIA_NOT_FOUND', `找不到媒体记录 #${id}`, 404);
+    assertMediaOwnership(id, params);
     const caption = typeof params.caption === 'string' ? params.caption.trim().slice(0, 500) : '';
     const next = caption || null;
     extras.media.setCaption(id, next);

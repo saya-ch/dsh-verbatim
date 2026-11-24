@@ -30,6 +30,7 @@ import os from 'node:os';
 import { openDb, defaultDbPath } from '../src/store/db.js';
 import { createRepo, createExtras } from '../src/store/repo.js';
 import { createToolSet } from '../src/tools/index.js';
+import { loadGlobalConfig } from '../src/config/global-config.js';
 import { loadSessionConfig } from '../src/config/session-config.js';
 import { importSession } from '../src/pipeline.js';
 
@@ -38,13 +39,12 @@ const log = (...args) => console.error('[verbatim-mcp]', ...args);
 
 /* ───────────────────────── 找会话日志 ───────────────────────── */
 
-/** 在 $DSH_HOME/sessions 下找最近修改的 session.v4.jsonl.zstd */
-function findLatestSession() {
+/** 在 $DSH_HOME/sessions 下收集全部 session.v4.jsonl.zstd 并按 mtime 倒序排列 */
+function discoverSessions() {
   const root = path.join(process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh'), 'sessions');
-  if (!fs.existsSync(root)) return null;
+  if (!fs.existsSync(root)) return [];
 
-  let best = null;
-  let bestAt = 0;
+  const found = [];
   const walk = (dir, depth) => {
     if (depth > 3) return;
     let entries;
@@ -58,25 +58,63 @@ function findLatestSession() {
       if (e.isDirectory()) walk(p, depth + 1);
       else if (e.name === 'session.v4.jsonl.zstd') {
         try {
-          const at = fs.statSync(p).mtimeMs;
-          if (at > bestAt) { bestAt = at; best = p; }
+          const mtimeMs = fs.statSync(p).mtimeMs;
+          found.push({ file: p, sessionId: path.basename(path.dirname(p)), mtimeMs });
         } catch { /* 读不到就跳过 */ }
       }
     }
   };
   try { walk(root, 0); } catch { /* 权限问题当没找到 */ }
-  return best;
+  found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return found;
 }
 
-const sessionFile = process.env.VERBATIM_SESSION || findLatestSession();
+function resolvePinnedSession() {
+  if (process.env.VERBATIM_SESSION) return process.env.VERBATIM_SESSION;
+  const targetId = process.env.VERBATIM_SESSION_ID?.trim();
+  if (!targetId) return null;
+  const match = discoverSessions().find((s) => s.sessionId === targetId);
+  if (!match) log(`未找到 VERBATIM_SESSION_ID=${targetId} 对应的会话日志`);
+  return match?.file ?? null;
+}
+
+const pinnedSessionFile = resolvePinnedSession();
+const isPinned = Boolean(process.env.VERBATIM_SESSION || process.env.VERBATIM_SESSION_ID);
+
+function pickActiveSession({ warnMultiple = false } = {}) {
+  if (pinnedSessionFile) return pinnedSessionFile;
+  if (isPinned) return null;
+  const all = discoverSessions();
+  if (all.length === 0) return null;
+  if (warnMultiple && all.length > 1) {
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const active = all.filter((s) => s.mtimeMs >= dayAgo);
+    if (active.length > 1) {
+      log(
+        `注意：检测到 ${active.length} 个近 24 小时活跃会话（当前暂绑 ${all[0].sessionId}）；`
+        + `如需锁定请设置 VERBATIM_SESSION_ID。`,
+      );
+    }
+  }
+  return all[0].file;
+}
+
+const sessionFile = pickActiveSession({ warnMultiple: true });
 const autoSync = process.env.VERBATIM_AUTOSYNC !== '0';
 const dbPath = process.env.VERBATIM_DB || defaultDbPath();
+
+let configuredVecDim;
+try {
+  const gCfg = loadGlobalConfig({ dshHome: process.env.DSH_HOME ?? undefined }).config;
+  const rawDim = Number(gCfg?.embedding?.dim);
+  if (Number.isInteger(rawDim) && rawDim > 0) configuredVecDim = rawDim;
+} catch { /* ignore */ }
 
 /* ───────────────────────── 启动 ───────────────────────── */
 
 let ctx = null;
 try {
-  const handle = openDb({ dbPath, logger: { warn: (m) => log(m) } });
+  const handle = openDb({ dbPath, vecDim: configuredVecDim, logger: { warn: (m) => log(m) } });
   ctx = {
     handle,
     repo: createRepo(handle),
@@ -86,7 +124,7 @@ try {
   };
   log(`库已打开：${dbPath}${handle.hasVec ? '（向量索引可用）' : '（降级为暴力余弦，功能等价）'}`);
   if (sessionFile) log(`同步会话：${sessionFile}`);
-  else log('没找到任何会话日志。设置 VERBATIM_SESSION 指向一个 session.v4.jsonl.zstd。');
+  else log('没找到任何会话日志。设置 VERBATIM_SESSION 或 VERBATIM_SESSION_ID 指向目标会话。');
 } catch (e) {
   log(`打开记忆库失败：${e.message}`);
   ctx = null;
@@ -94,8 +132,34 @@ try {
 
 /* ───────────────────────── 增量同步 ───────────────────────── */
 
-let lastMtime = 0;
+const syncedMtimes = new Map();
 let syncing = null;
+
+function buildToolsForSession(filePath) {
+  if (!ctx) return { tools: [], close: () => {} };
+  const sid = filePath ? path.basename(path.dirname(filePath)) : '';
+  try {
+    const cfg = loadSessionConfig(sid, { dshHome: process.env.DSH_HOME ?? undefined });
+    return createToolSet({ ...ctx, config: cfg, sessionId: sid });
+  } catch (e) {
+    log(`读取会话配置失败，按默认开关注册工具：${e.message}`);
+    return createToolSet({ ...ctx, sessionId: sid });
+  }
+}
+
+let TOOL_SET = buildToolsForSession(sessionFile);
+let TOOLS = TOOL_SET.tools ?? [];
+
+function refreshActiveSessionIfNeeded() {
+  if (!ctx || isPinned) return;
+  const latest = pickActiveSession();
+  if (latest && latest !== ctx.sessionFile) {
+    log(`检测到当前活跃会话切换：${ctx.sessionFile ?? '(none)'} → ${latest}`);
+    ctx.sessionFile = latest;
+    TOOL_SET = buildToolsForSession(latest);
+    TOOLS = TOOL_SET.tools ?? [];
+  }
+}
 
 /**
  * 保证库和会话日志一致。
@@ -103,30 +167,32 @@ let syncing = null;
  * 并发调用共用同一个 promise，不会重复导入。
  */
 async function ensureFresh() {
+  refreshActiveSessionIfNeeded();
   if (!autoSync || !ctx?.sessionFile) return;
+  const targetFile = ctx.sessionFile;
   let stat;
   try {
-    stat = fs.statSync(ctx.sessionFile);
+    stat = fs.statSync(targetFile);
   } catch {
     return; // 日志没了就跑现状，不要因为同步失败让工具挂掉
   }
-  if (stat.mtimeMs === lastMtime) return;
+  if (syncedMtimes.get(targetFile) === stat.mtimeMs) return;
   if (syncing) return syncing;
 
   syncing = (async () => {
     const t0 = Date.now();
     try {
-      const r = await importSession(ctx.sessionFile, {
+      const r = await importSession(targetFile, {
         handle: ctx.handle,
         dshHome: process.env.DSH_HOME ?? undefined,
         quiet: true,
       });
-      lastMtime = stat.mtimeMs;
+      syncedMtimes.set(targetFile, stat.mtimeMs);
       log(`同步完成 ${Date.now() - t0}ms：入库 ${r?.ingest?.inserted ?? '?'} 条`);
     } catch (e) {
       // 同步失败不阻塞查询：查到的可能是稍旧的数据，但比报错好
       log(`同步失败（继续用现有数据）：${e.message}`);
-      lastMtime = stat.mtimeMs; // 别在同一个坏状态上反复重试
+      syncedMtimes.set(targetFile, stat.mtimeMs); // 别在同一个坏状态上反复重试
     } finally {
       syncing = null;
     }
@@ -135,22 +201,6 @@ async function ensureFresh() {
 }
 
 /* ───────────────────────── 工具集 ───────────────────────── */
-
-function buildTools() {
-  if (!ctx) return { tools: [], close: () => {} };
-  try {
-    const sid = ctx.sessionFile ? path.basename(path.dirname(ctx.sessionFile)) : '';
-    const cfg = loadSessionConfig(sid, { dshHome: process.env.DSH_HOME ?? undefined });
-    return createToolSet({ ...ctx, config: cfg, sessionId: sid });
-  } catch (e) {
-    log(`读取会话配置失败，按默认开关注册工具：${e.message}`);
-    const sid = ctx.sessionFile ? path.basename(path.dirname(ctx.sessionFile)) : '';
-    return createToolSet({ ...ctx, sessionId: sid });
-  }
-}
-
-const TOOL_SET = buildTools();
-const TOOLS = TOOL_SET.tools ?? [];
 
 /* ───────────────────────── JSON-RPC ───────────────────────── */
 
@@ -175,6 +225,7 @@ async function handleRequest(msg) {
       return undefined;
 
     case 'tools/list':
+      refreshActiveSessionIfNeeded();
       return reply(id, {
         tools: TOOLS.map((t) => ({
           name: t.name,
@@ -184,12 +235,11 @@ async function handleRequest(msg) {
       });
 
     case 'tools/call': {
+      // 每次调用前同步并刷新活跃会话，保证"边聊边查得到"
+      await ensureFresh();
       const name = params?.name;
       const tool = TOOLS.find((t) => t.name === name);
       if (!tool) return replyError(id, -32602, `未知工具：${name}`);
-
-      // 每次调用前同步，保证"边聊边查得到"
-      await ensureFresh();
 
       try {
         const text = await tool.handler(params?.arguments ?? {}, ctx ?? {});

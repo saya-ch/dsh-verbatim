@@ -119,11 +119,11 @@ flowchart LR
   Chat["DSH 对话与附件"] -->|"逐字留存"| Msg["msg 原文表"]
   Msg -->|"陪伴切分"| Gran["exchange / thread"]
   Gran -->|"混合索引"| Index["FTS5 + 多粒度向量"]
-  Index -->|"RRF + 可选 Rerank"| Tools["Agent 工具 (search / around / timeline)"]
+  Index -->|"RRF + 可选 Rerank"| Tools["Agent 工具 (search / remember / forget)"]
   Tools -->|"隐私过滤后回传"| Model["当前对话模型"]
 ```
 
-插件通过 Host 服务挂载入库管线、检索服务与 3 个 Agent 只读工具（`memory_search`、`memory_around`、`memory_timeline`），并通过 Client 入口注入侧栏 6 视图与设置页 5 个标签页；不改写 DeepSeek Harness 安装目录中的源码。详细表结构与写入锁设计见 [系统架构说明](docs/ARCHITECTURE.md)。
+插件通过 Host 服务挂载入库管线、检索服务与 3 个 Agent 工具（`memory_search`、`memory_remember`、`memory_forget`，其中对话原文对所有工具保持只读不可删改），并通过 Client 入口注入侧栏 6 视图与设置页 5 个标签页；不改写 DeepSeek Harness 安装目录中的源码。详细表结构与写入锁设计见 [系统架构说明](docs/ARCHITECTURE.md)。
 
 ## 隐私与安全
 

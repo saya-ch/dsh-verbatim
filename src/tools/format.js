@@ -21,6 +21,21 @@ import path from 'node:path';
 /** 上海固定偏移（UTC+8）。中国不用夏令时，所以是常数而不是按日期算。 */
 export const TZ_OFFSET_MS = 8 * 60 * 60 * 1000;
 
+/**
+ * 解析当前生效的时区偏移毫秒数：显式传参 > 环境变量 VERBATIM_TZ_OFFSET_MINUTES > 默认 +08:00。
+ * @param {number|null|undefined} [overrideMs]
+ * @returns {number}
+ */
+export function resolveTzOffsetMs(overrideMs) {
+  if (Number.isFinite(Number(overrideMs))) return Number(overrideMs);
+  const envMin = process.env.VERBATIM_TZ_OFFSET_MINUTES;
+  if (envMin !== undefined && envMin !== '') {
+    const m = Number(envMin);
+    if (Number.isFinite(m) && m >= -720 && m <= 840) return m * 60_000;
+  }
+  return TZ_OFFSET_MS;
+}
+
 /** 一天。上海不改时间，所以这个常数永远准。 */
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -64,8 +79,9 @@ const pad2 = (n) => String(n).padStart(2, '0');
  * @param {number} ts epoch ms
  * @returns {{y:number, mo:number, d:number, h:number, mi:number, wd:number}}
  */
-export function shanghaiParts(ts) {
-  const d = new Date(Number(ts) + TZ_OFFSET_MS);
+export function shanghaiParts(ts, tzOffsetMs) {
+  const offset = resolveTzOffsetMs(tzOffsetMs);
+  const d = new Date(Number(ts) + offset);
   return {
     y: d.getUTCFullYear(),
     mo: d.getUTCMonth() + 1,
@@ -77,13 +93,15 @@ export function shanghaiParts(ts) {
 }
 
 /**
- * 上海当天 00:00 的 epoch ms（含）。
+ * 当天 00:00 的 epoch ms（含），默认按上海时区（+08:00）。
  * @param {number} ts
+ * @param {number} [tzOffsetMs]
  * @returns {number}
  */
-export function startOfDay(ts) {
-  const t = Number(ts) + TZ_OFFSET_MS;
-  return Math.floor(t / DAY_MS) * DAY_MS - TZ_OFFSET_MS;
+export function startOfDay(ts, tzOffsetMs) {
+  const offset = resolveTzOffsetMs(tzOffsetMs);
+  const t = Number(ts) + offset;
+  return Math.floor(t / DAY_MS) * DAY_MS - offset;
 }
 
 /**
@@ -92,21 +110,23 @@ export function startOfDay(ts) {
  *
  * @param {number} ts
  * @param {number} days
+ * @param {number} [tzOffsetMs]
  * @returns {number}
  */
-export function dayShift(ts, days) {
-  return startOfDay(ts) + Number(days) * DAY_MS;
+export function dayShift(ts, days, tzOffsetMs) {
+  return startOfDay(ts, tzOffsetMs) + Number(days) * DAY_MS;
 }
 
 /**
- * 上海本周**周一** 00:00（中文语境的「上周三」按周一起算）。
+ * 本周**周一** 00:00（中文语境的「上周三」按周一起算）。
  * @param {number} ts
+ * @param {number} [tzOffsetMs]
  * @returns {number}
  */
-export function startOfWeek(ts) {
-  const { wd } = shanghaiParts(ts);
+export function startOfWeek(ts, tzOffsetMs) {
+  const { wd } = shanghaiParts(ts, tzOffsetMs);
   const mondayIndex = (wd + 6) % 7; // 周一=0 … 周日=6
-  return startOfDay(ts) - mondayIndex * DAY_MS;
+  return startOfDay(ts, tzOffsetMs) - mondayIndex * DAY_MS;
 }
 
 /** 周几的名字 → 周一起算的下标（周一=0 … 周日=6） */
@@ -118,26 +138,26 @@ export function weekdayIndex(name) {
 /* ================================ 时间格式化 ================================ */
 
 /** `11-12` */
-export function fmtDate(ts) {
-  const p = shanghaiParts(ts);
+export function fmtDate(ts, tzOffsetMs) {
+  const p = shanghaiParts(ts, tzOffsetMs);
   return `${pad2(p.mo)}-${pad2(p.d)}`;
 }
 
 /** `2026-11-12` */
-export function fmtLongDate(ts) {
-  const p = shanghaiParts(ts);
+export function fmtLongDate(ts, tzOffsetMs) {
+  const p = shanghaiParts(ts, tzOffsetMs);
   return `${p.y}-${pad2(p.mo)}-${pad2(p.d)}`;
 }
 
 /** `23:36` */
-export function fmtTime(ts) {
-  const p = shanghaiParts(ts);
+export function fmtTime(ts, tzOffsetMs) {
+  const p = shanghaiParts(ts, tzOffsetMs);
   return `${pad2(p.h)}:${pad2(p.mi)}`;
 }
 
 /** `11-12 23:36` */
-export function fmtStamp(ts) {
-  return `${fmtDate(ts)} ${fmtTime(ts)}`;
+export function fmtStamp(ts, tzOffsetMs) {
+  return `${fmtDate(ts, tzOffsetMs)} ${fmtTime(ts, tzOffsetMs)}`;
 }
 
 /**
@@ -216,13 +236,13 @@ export function fmtCount(n) {
  * @param {number} to
  * @returns {string}
  */
-export function fmtSpan(from, to) {
+export function fmtSpan(from, to, tzOffsetMs) {
   const a = Number(from);
   const b = Number(to);
   if (!Number.isFinite(a) || !Number.isFinite(b)) return '';
-  const sameYear = shanghaiParts(a).y === shanghaiParts(b).y;
+  const sameYear = shanghaiParts(a, tzOffsetMs).y === shanghaiParts(b, tzOffsetMs).y;
   const f = sameYear ? fmtDate : fmtLongDate;
-  return `${f(a)} 至 ${f(b)}`;
+  return `${f(a, tzOffsetMs)} 至 ${f(b, tzOffsetMs)}`;
 }
 
 /* ================================ 文本排版 ================================ */

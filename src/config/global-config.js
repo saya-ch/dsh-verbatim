@@ -76,7 +76,7 @@ export const DEFAULT_GLOBAL_CONFIG = Object.freeze({
     apiKey: '',
     /** 兼容从环境变量读 Key（apiKey 为空时才用） */
     apiKeyEnv: '',
-    /** 参与精排的候选条数上限（默认 50：与粗排池 RERANK_POOL_SIZE 对齐，保证整池都排到） */
+    /** 参与精排的候选条数上限（默认 50，保证紧凑候选池全池重排） */
     topN: 50,
     /** 超时毫秒（超时自动降级回 RRF 原序） */
     timeoutMs: 8000,
@@ -88,6 +88,8 @@ export const DEFAULT_GLOBAL_CONFIG = Object.freeze({
     defaultLimit: 8,
     /** 单次最多返回几条 */
     maxLimit: 50,
+    /** 固定时区偏移（分钟，默认 480 = UTC+8 Asia/Shanghai；设为 null 回退默认 +480） */
+    timezoneOffsetMinutes: 480,
   }),
 
   /** 索引 */

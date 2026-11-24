@@ -239,6 +239,52 @@ export function applySchema(db, opts = {}) {
 }
 
 /**
+ * 读取已有 vec_msg 虚表的维度（未建表返回 null）。
+ * @param {DatabaseSync} db
+ * @returns {number|null}
+ */
+export function getVecTableDim(db) {
+  try {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec_msg'")
+      .get();
+    const m = /float\[(\d+)\]/i.exec(String(row?.sql ?? ''));
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 当用户切换了非 1024 维的 Embedding 模型并执行向量重建时，按新维度重建 vec0 虚表，
+ * 并清理旧模型维度标记，确保不会被旧表 float[1024] 硬锁死。
+ *
+ * @param {DatabaseSync} db
+ * @param {number} dim
+ * @param {{ hasVec?: boolean }} [opts]
+ * @returns {boolean} 是否实际执行了重建
+ */
+export function recreateVecTables(db, dim, opts = {}) {
+  const targetDim = Math.trunc(Number(dim));
+  if (!Number.isInteger(targetDim) || targetDim <= 0) return false;
+  if (!opts.hasVec) return false;
+  const currentDim = getVecTableDim(db);
+  if (currentDim === targetDim) return false;
+
+  const { vec } = splitSchema();
+  if (!vec.trim()) return false;
+
+  for (const tbl of ['vec_msg', 'vec_scene', 'vec_chunk', 'vec_note', 'vec_window']) {
+    try { db.exec(`DROP TABLE IF EXISTS ${tbl}`); } catch { /* ignore */ }
+  }
+  const vecSql = vec.replace(/float\[1024\]/g, `float[${targetDim}]`);
+  db.exec(vecSql);
+  try { db.exec('UPDATE msg SET vec_model = NULL, vec_dim = NULL WHERE vec_dim IS NOT NULL AND vec_dim != ' + targetDim); } catch { /* ignore */ }
+  try { db.exec('UPDATE window SET vec_model = NULL, vec_dim = NULL WHERE vec_dim IS NOT NULL AND vec_dim != ' + targetDim); } catch { /* ignore */ }
+  return true;
+}
+
+/**
  * schema.sql 的结构版本。加字段/加表时 +1，并在 MIGRATIONS 里补一步。
  *
  * v5：msg / scene 主键加 AUTOINCREMENT（D-118：rewind 删掉的 id 不能复用，

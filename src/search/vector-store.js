@@ -814,6 +814,139 @@ export function createVectorStore(handle, options = {}) {
     return map;
   }
 
+  function hydrateChunks(ids, filter = {}) {
+    if (ids.length === 0) return new Map();
+    const where = [`c.id IN (${placeholders(ids.length)})`];
+    const args = toParams(ids);
+    if (filter.sessionId) {
+      where.push('m.session_id = ?');
+      args.push(filter.sessionId);
+    }
+    if (!filter.includeExcluded) where.push('m.excluded = 0');
+    if (Number.isFinite(filter.from)) {
+      where.push('m.at >= ?');
+      args.push(filter.from);
+    }
+    if (Number.isFinite(filter.to)) {
+      where.push('m.at < ?');
+      args.push(filter.to);
+    }
+    const rows = stmt(
+      `SELECT c.id, c.msg_id, c.idx, c.start_char, c.end_char,
+              m.session_id, m.excluded, m.at
+         FROM chunk c JOIN msg m ON m.id = c.msg_id
+        WHERE ${where.join(' AND ')}`,
+    ).all(...args);
+    const map = new Map();
+    for (const r of rows) map.set(Number(r.id), r);
+    return map;
+  }
+
+  function hydrateWindows(ids, filter = {}) {
+    if (ids.length === 0) return new Map();
+    const where = [`w.id IN (${placeholders(ids.length)})`];
+    const args = toParams(ids);
+    if (filter.sessionId) {
+      where.push('w.session_id = ?');
+      args.push(filter.sessionId);
+    }
+    if (filter.kind) {
+      where.push('w.kind = ?');
+      args.push(String(filter.kind));
+    }
+    if (Number.isFinite(filter.from)) {
+      where.push('w.end_at >= ?');
+      args.push(filter.from);
+    }
+    if (Number.isFinite(filter.to)) {
+      where.push('w.start_at < ?');
+      args.push(filter.to);
+    }
+    try {
+      const rows = stmt(
+        `SELECT w.id, w.session_id, w.scene_id, w.idx, w.kind, w.start_msg_id, w.end_msg_id,
+                w.start_at, w.end_at, w.msg_count, w.text,
+                s.start_at AS scene_start_at, s.end_at AS scene_end_at, s.msg_count AS scene_msg_count
+           FROM window w
+           LEFT JOIN scene s ON s.id = w.scene_id
+          WHERE ${where.join(' AND ')}`,
+      ).all(...args);
+      const map = new Map();
+      for (const r of rows) map.set(Number(r.id), r);
+      return map;
+    } catch {
+      return new Map();
+    }
+  }
+
+  /**
+   * 统一的过滤型 KNN 召回器：
+   * - vec0 模式：若外层条件（如 sessionId / 时间范围）过滤后不足 want 条，渐进扩大 overFetch 再查，
+   *   避免多会话大库场景下小会话被全局 Top-8k 挤掉而漏召回。
+   * - 降级模式：全库只算一次 dot 排序，分批 hydrate 直到凑齐 want 条或遍历完，不再做多余 O(n·dim) 扫描。
+   */
+  function runFilteredKnn({ kind, query, want, total, filter = {}, hydrate, buildHit }) {
+    if (total === 0) return [];
+    const q = normalizeVector(query, dim, '查询向量');
+    const baseFactor = filter.overFetch ?? overFetch;
+    const minScore = Number.isFinite(filter.minScore) ? filter.minScore : null;
+
+    if (!hasVec) {
+      // 降级模式下 candidates(..., total) 只算一次全量点积；按块 hydrate，凑齐即止
+      const allCands = candidates(kind, q, total);
+      const batchSize = Math.max(want * 4, 64);
+      const out = [];
+      for (let offset = 0; offset < allCands.length && out.length < want; offset += batchSize) {
+        const slice = allCands.slice(offset, offset + batchSize);
+        const rows = hydrate(slice.map((c) => c.id), filter);
+        for (const c of slice) {
+          const row = rows.get(c.id);
+          if (!row) continue;
+          const score = distanceToScore(c.distance);
+          if (minScore !== null && score < minScore) {
+            // c.distance 升序 ⇒ score 降序，后面只会更低，直接结束
+            return out;
+          }
+          out.push(buildHit(row, c, score, out.length + 1));
+          if (out.length >= want) break;
+        }
+      }
+      return out;
+    }
+
+    const maxFetch = Math.min(total, Math.max(8192, want * 128));
+    let fetch = Math.min(total, Math.max(1, Math.ceil(want * baseFactor)));
+    const seenIds = new Set();
+    const out = [];
+
+    while (true) {
+      const cands = candidates(kind, q, fetch);
+      const fresh = cands.filter((c) => !seenIds.has(c.id));
+      for (const c of fresh) seenIds.add(c.id);
+
+      if (fresh.length > 0) {
+        const rows = hydrate(fresh.map((c) => c.id), filter);
+        for (const c of fresh) {
+          const row = rows.get(c.id);
+          if (!row) continue;
+          const score = distanceToScore(c.distance);
+          if (minScore !== null && score < minScore) {
+            return out;
+          }
+          out.push(buildHit(row, c, score, out.length + 1));
+          if (out.length >= want) return out;
+        }
+      }
+
+      if (cands.length < fetch || fetch >= maxFetch) break;
+      const nextFetch = Math.min(maxFetch, fetch * 4);
+      if (nextFetch <= fetch) break;
+      fetch = nextFetch;
+    }
+
+    return out;
+  }
+
   /* ------------------------------ 对外 ------------------------------ */
 
   const store = {
@@ -1138,47 +1271,24 @@ export function createVectorStore(handle, options = {}) {
      *            endChar:number, distance:number, score:number}[]}
      */
     knnChunk(query, k = 10, filter = {}) {
-      const q = normalizeVector(query, dim, '查询向量');
       const want = Math.max(1, Math.floor(filter.limit ?? k));
-      const total = countChunkVec();
-      if (total === 0) return [];
-      const fetch = Math.min(total, Math.ceil(want * (filter.overFetch ?? overFetch)));
-      const cands = candidates('chunk', q, fetch);
-      if (cands.length === 0) return [];
-
-      // 候选 chunk → 元数据（msg_id / idx / 位置）。分片数远少于消息数，IN 查询很轻。
-      const ids = cands.map((c) => c.id);
-      const metaRows = stmt(
-        `SELECT c.id, c.msg_id, c.idx, c.start_char, c.end_char,
-                m.session_id, m.excluded, m.at
-           FROM chunk c JOIN msg m ON m.id = c.msg_id
-          WHERE c.id IN (${placeholders(ids.length)})`,
-      ).all(...ids.map((id) => Number(id)));
-      const meta = new Map(metaRows.map((r) => [Number(r.id), r]));
-
-      const out = [];
-      for (const c of cands) {
-        const m = meta.get(c.id);
-        if (!m) continue;                                   // 原文已删（rewind）→ 分片残留，跳过
-        if (filter.sessionId && m.session_id !== filter.sessionId) continue;
-        if (!filter.includeExcluded && Number(m.excluded) === 1) continue;
-        const msgAt = Number(m.at);
-        if (Number.isFinite(filter.from) && msgAt < filter.from) continue;
-        if (Number.isFinite(filter.to) && msgAt >= filter.to) continue;
-        const hit = {
+      return runFilteredKnn({
+        kind: 'chunk',
+        query,
+        want,
+        total: countChunkVec(),
+        filter,
+        hydrate: hydrateChunks,
+        buildHit: (m, c, score) => ({
           chunkId: c.id,
           msgId: Number(m.msg_id),
           idx: Number(m.idx),
           startChar: Number(m.start_char),
           endChar: Number(m.end_char),
           distance: c.distance,
-          score: distanceToScore(c.distance),
-        };
-        if (Number.isFinite(filter.minScore) && hit.score < filter.minScore) continue;
-        out.push(hit);
-        if (out.length >= want) break;
-      }
-      return out;
+          score,
+        }),
+      });
     },
 
     /** 分片向量总数 */
@@ -1254,31 +1364,21 @@ export function createVectorStore(handle, options = {}) {
      * @returns {object[]} 命中（带 distance / score / vecRank），按相似度降序
      */
     knnMsg(query, k = 10, filter = {}) {
-      const q = normalizeVector(query, dim, '查询向量');
       const want = Math.max(1, Math.floor(filter.limit ?? k));
-      const total = countMsgVec();
-      if (total === 0) return [];
-      const fetch = Math.min(total, Math.ceil(want * (filter.overFetch ?? overFetch)));
-      const cands = candidates('msg', q, fetch); // 只算一次：降级模式下这是 O(n·dim)
-      const rows = hydrateMsgs(
-        cands.map((c) => c.id),
+      return runFilteredKnn({
+        kind: 'msg',
+        query,
+        want,
+        total: countMsgVec(),
         filter,
-      );
-      const out = [];
-      for (const c of cands) {
-        const row = rows.get(c.id);
-        if (!row) continue; // 外层条件把它滤掉了（时间不在范围 / 被软排除 / 已物理删）
-        const hit = {
+        hydrate: hydrateMsgs,
+        buildHit: (row, c, score, vecRank) => ({
           ...row,
           distance: c.distance,
-          score: distanceToScore(c.distance),
-          vecRank: out.length + 1,
-        };
-        if (Number.isFinite(filter.minScore) && hit.score < filter.minScore) continue;
-        out.push(hit);
-        if (out.length >= want) break;
-      }
-      return out;
+          score,
+          vecRank,
+        }),
+      });
     },
 
     /**
@@ -1288,24 +1388,21 @@ export function createVectorStore(handle, options = {}) {
      * @param {{from?: number, to?: number, sessionId?: string, overFetch?: number}} [filter]
      */
     knnScene(query, k = 5, filter = {}) {
-      const q = normalizeVector(query, dim, '查询向量');
       const want = Math.max(1, Math.floor(filter.limit ?? k));
-      const total = countSceneVec();
-      if (total === 0) return [];
-      const fetch = Math.min(total, Math.ceil(want * (filter.overFetch ?? overFetch)));
-      const cands = candidates('scene', q, fetch);
-      const rows = hydrateScenes(
-        cands.map((c) => c.id),
+      return runFilteredKnn({
+        kind: 'scene',
+        query,
+        want,
+        total: countSceneVec(),
         filter,
-      );
-      const out = [];
-      for (const c of cands) {
-        const row = rows.get(c.id);
-        if (!row) continue;
-        out.push({ ...row, distance: c.distance, score: distanceToScore(c.distance), vecRank: out.length + 1 });
-        if (out.length >= want) break;
-      }
-      return out;
+        hydrate: hydrateScenes,
+        buildHit: (row, c, score, vecRank) => ({
+          ...row,
+          distance: c.distance,
+          score,
+          vecRank,
+        }),
+      });
     },
 
     /** 笔记向量总数 */
@@ -1368,26 +1465,21 @@ export function createVectorStore(handle, options = {}) {
      * @param {{sessionId?: string, from?: number, to?: number, minScore?: number, limit?: number, overFetch?: number}} [filter]
      */
     knnNote(query, k = 5, filter = {}) {
-      const q = normalizeVector(query, dim, '查询向量');
       const want = Math.max(1, Math.floor(filter.limit ?? k));
-      const total = countNoteVec();
-      if (total === 0) return [];
-      const fetch = Math.min(total, Math.ceil(want * (filter.overFetch ?? overFetch)));
-      const cands = candidates('note', q, fetch);
-      const rows = hydrateNotes(
-        cands.map((c) => c.id),
+      return runFilteredKnn({
+        kind: 'note',
+        query,
+        want,
+        total: countNoteVec(),
         filter,
-      );
-      const out = [];
-      for (const c of cands) {
-        const row = rows.get(c.id);
-        if (!row) continue;
-        const score = distanceToScore(c.distance);
-        if (Number.isFinite(filter.minScore) && score < filter.minScore) continue;
-        out.push({ ...row, distance: c.distance, score, vecRank: out.length + 1 });
-        if (out.length >= want) break;
-      }
-      return out;
+        hydrate: hydrateNotes,
+        buildHit: (row, c, score, vecRank) => ({
+          ...row,
+          distance: c.distance,
+          score,
+          vecRank,
+        }),
+      });
     },
 
     /* ── 场景内滑动对话窗（Window） ── */
@@ -1469,54 +1561,15 @@ export function createVectorStore(handle, options = {}) {
      * @param {{sessionId?: string, from?: number, to?: number, minScore?: number, limit?: number, overFetch?: number}} [filter]
      */
     knnWindow(query, k = 10, filter = {}) {
-      const q = normalizeVector(query, dim, '查询向量');
       const want = Math.max(1, Math.floor(filter.limit ?? k));
-      const total = countWindowVec();
-      if (total === 0) return [];
-      const fetch = Math.min(total, Math.ceil(want * (filter.overFetch ?? overFetch)));
-      const cands = candidates('window', q, fetch);
-      if (cands.length === 0) return [];
-
-      const ids = cands.map((c) => c.id);
-      const where = [`w.id IN (${placeholders(ids.length)})`];
-      const args = toParams(ids);
-      if (filter.sessionId) {
-        where.push('w.session_id = ?');
-        args.push(filter.sessionId);
-      }
-      if (filter.kind) {
-        where.push('w.kind = ?');
-        args.push(String(filter.kind));
-      }
-      if (Number.isFinite(filter.from)) {
-        where.push('w.end_at >= ?');
-        args.push(filter.from);
-      }
-      if (Number.isFinite(filter.to)) {
-        where.push('w.start_at < ?');
-        args.push(filter.to);
-      }
-      let rows = [];
-      try {
-        rows = stmt(
-          `SELECT w.id, w.session_id, w.scene_id, w.idx, w.kind, w.start_msg_id, w.end_msg_id,
-                  w.start_at, w.end_at, w.msg_count, w.text,
-                  s.start_at AS scene_start_at, s.end_at AS scene_end_at, s.msg_count AS scene_msg_count
-             FROM window w
-             LEFT JOIN scene s ON s.id = w.scene_id
-            WHERE ${where.join(' AND ')}`,
-        ).all(...args);
-      } catch {
-        return [];
-      }
-      const byId = new Map(rows.map((r) => [Number(r.id), r]));
-      const out = [];
-      for (const c of cands) {
-        const r = byId.get(c.id);
-        if (!r) continue;
-        const score = distanceToScore(c.distance);
-        if (Number.isFinite(filter.minScore) && score < filter.minScore) continue;
-        out.push({
+      return runFilteredKnn({
+        kind: 'window',
+        query,
+        want,
+        total: countWindowVec(),
+        filter,
+        hydrate: hydrateWindows,
+        buildHit: (r, c, score, vecRank) => ({
           id: Number(r.id),
           windowId: Number(r.id),
           sessionId: String(r.session_id),
@@ -1534,11 +1587,9 @@ export function createVectorStore(handle, options = {}) {
           sceneMsgCount: r.scene_msg_count === null || r.scene_msg_count === undefined ? Number(r.msg_count) : Number(r.scene_msg_count),
           distance: c.distance,
           score,
-          vecRank: out.length + 1,
-        });
-        if (out.length >= want) break;
-      }
-      return out;
+          vecRank,
+        }),
+      });
     },
 
     /**

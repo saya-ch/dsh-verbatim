@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureWindowsForSession, rebuildDerived, rebuildScenesForSession } from '../pipeline.js';
 import { generateGist } from '../derive/gist.js';
 import { createHostLlmAdapter } from './dsh-llm.js';
+import { recreateVecTables } from '../store/db.js';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TIME_MAX = Number.MAX_SAFE_INTEGER;
@@ -433,6 +434,9 @@ export function createRebuildManager({
 
     if (scope === 'vector') {
       const provider = await makeEmbeddingProvider();
+      if (recreateVecTables(handle.db, provider.dim, { hasVec: handle.hasVec })) {
+        logger.info?.(`[verbatim] 检测到向量维度变更，已按 ${provider.dim} 维重建 vec0 虚表`);
+      }
       const { createVectorStore } = await import('../search/vector-store.js');
       const { createIndexer } = await import('../search/indexer.js');
       const store = createVectorStore(handle, {
@@ -465,6 +469,9 @@ export function createRebuildManager({
     if (hasEmbeddingKey()) {
       try {
         embedding = await makeEmbeddingProvider();
+        if (recreateVecTables(handle.db, embedding.dim, { hasVec: handle.hasVec })) {
+          logger.info?.(`[verbatim] 全库重建检测到向量维度变更，已按 ${embedding.dim} 维重建 vec0 虚表`);
+        }
       } catch (error) {
         embeddingSkip = error?.message ?? String(error);
       }
