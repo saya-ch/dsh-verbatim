@@ -13,6 +13,7 @@ import { readSessionFile, readSessionFileIncremental } from './ingest/reader.js'
 import { importSession } from './pipeline.js';
 import { createVectorStore } from './search/vector-store.js';
 import { createPanelApi, createPanelHandler } from './host/panel-api.js';
+import { shanghaiParts, speakerLabel, quoteLine } from './tools/format.js';
 
 function frameOf(lines) {
   return zlib.zstdCompressSync(Buffer.from(lines.map((o) => JSON.stringify(o)).join('\n') + '\n', 'utf8'));
@@ -334,5 +335,37 @@ test('bin/mcp-memory.mjs：同会话下切换配置热重载 tools/list 无需�
     child.kill();
     await exited;
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('format：VERBATIM_TZ 支持 IANA 时区与夏令时自动切换，并支持自定义 speakerLabels', () => {
+  const prevTz = process.env.VERBATIM_TZ;
+  const prevUser = process.env.VERBATIM_SPEAKER_USER;
+  const prevAssistant = process.env.VERBATIM_SPEAKER_ASSISTANT;
+  try {
+    process.env.VERBATIM_TZ = 'America/New_York';
+    // 7 月夏令时（EDT, UTC-4）：16:00 UTC → 12:00
+    const summer = shanghaiParts(Date.UTC(2026, 6, 15, 16, 0, 0));
+    assert.equal(summer.h, 12);
+    // 1 月冬令时（EST, UTC-5）：16:00 UTC → 11:00
+    const winter = shanghaiParts(Date.UTC(2026, 0, 15, 16, 0, 0));
+    assert.equal(winter.h, 11);
+
+    // 显式参数覆盖 speakerLabels
+    assert.equal(speakerLabel('user', { user: '她' }), '她');
+    assert.equal(quoteLine({ speaker: 'user', text: '早安' }, '  ', { speakerLabels: { user: '她' } }), '  她：「早安」');
+
+    // 环境变量覆盖 speakerLabels
+    process.env.VERBATIM_SPEAKER_USER = 'User';
+    process.env.VERBATIM_SPEAKER_ASSISTANT = 'AI';
+    assert.equal(speakerLabel('user'), 'User');
+    assert.equal(speakerLabel('assistant'), 'AI');
+  } finally {
+    if (prevTz === undefined) delete process.env.VERBATIM_TZ;
+    else process.env.VERBATIM_TZ = prevTz;
+    if (prevUser === undefined) delete process.env.VERBATIM_SPEAKER_USER;
+    else process.env.VERBATIM_SPEAKER_USER = prevUser;
+    if (prevAssistant === undefined) delete process.env.VERBATIM_SPEAKER_ASSISTANT;
+    else process.env.VERBATIM_SPEAKER_ASSISTANT = prevAssistant;
   }
 });

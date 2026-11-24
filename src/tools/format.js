@@ -21,13 +21,51 @@ import path from 'node:path';
 /** 上海固定偏移（UTC+8）。中国不用夏令时，所以是常数而不是按日期算。 */
 export const TZ_OFFSET_MS = 8 * 60 * 60 * 1000;
 
+const ianaFmtCache = new Map();
+
+function ianaOffsetMsAt(atMs, timeZone) {
+  try {
+    let fmt = ianaFmtCache.get(timeZone);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      });
+      if (ianaFmtCache.size < 32) ianaFmtCache.set(timeZone, fmt);
+    }
+    const parts = fmt.formatToParts(new Date(Number(atMs)));
+    const get = (type) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+    const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+    const flooredSec = Math.floor(Number(atMs) / 1000) * 1000;
+    return asUtc - flooredSec;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * 解析当前生效的时区偏移毫秒数：显式传参 > 环境变量 VERBATIM_TZ_OFFSET_MINUTES > 默认 +08:00。
+ * 解析当前生效的时区偏移毫秒数：
+ * 显式传参 > 环境变量 VERBATIM_TZ（支持 IANA 时区与夏令时） > VERBATIM_TZ_OFFSET_MINUTES > 默认 +08:00。
  * @param {number|null|undefined} [overrideMs]
+ * @param {number} [atMs]
+ * @param {string|null|undefined} [timeZone]
  * @returns {number}
  */
-export function resolveTzOffsetMs(overrideMs) {
-  if (Number.isFinite(Number(overrideMs))) return Number(overrideMs);
+export function resolveTzOffsetMs(overrideMs, atMs = Date.now(), timeZone = process.env.VERBATIM_TZ) {
+  if (overrideMs !== null && overrideMs !== undefined && Number.isFinite(Number(overrideMs))) {
+    return Number(overrideMs);
+  }
+  const tzName = typeof timeZone === 'string' ? timeZone.trim() : '';
+  if (tzName) {
+    const iana = ianaOffsetMsAt(atMs, tzName);
+    if (iana !== null && Number.isFinite(iana)) return iana;
+  }
   const envMin = process.env.VERBATIM_TZ_OFFSET_MINUTES;
   if (envMin !== undefined && envMin !== '') {
     const m = Number(envMin);
@@ -80,7 +118,7 @@ const pad2 = (n) => String(n).padStart(2, '0');
  * @returns {{y:number, mo:number, d:number, h:number, mi:number, wd:number}}
  */
 export function shanghaiParts(ts, tzOffsetMs) {
-  const offset = resolveTzOffsetMs(tzOffsetMs);
+  const offset = resolveTzOffsetMs(tzOffsetMs, ts);
   const d = new Date(Number(ts) + offset);
   return {
     y: d.getUTCFullYear(),
@@ -99,7 +137,7 @@ export function shanghaiParts(ts, tzOffsetMs) {
  * @returns {number}
  */
 export function startOfDay(ts, tzOffsetMs) {
-  const offset = resolveTzOffsetMs(tzOffsetMs);
+  const offset = resolveTzOffsetMs(tzOffsetMs, ts);
   const t = Number(ts) + offset;
   return Math.floor(t / DAY_MS) * DAY_MS - offset;
 }
@@ -247,18 +285,39 @@ export function fmtSpan(from, to, tzOffsetMs) {
 
 /* ================================ 文本排版 ================================ */
 
+export const DEFAULT_SPEAKER_LABELS = Object.freeze({
+  user: '他',
+  assistant: '我',
+  unknown: '？',
+});
+
 /**
- * 说话人标签 —— **从TA自己的视角标**（D-194）。
- *
- * 工具结果是TA读的：标成「你」会让TA以为那句话是自己说的（真 bug）。
- * 所以用户的话标「他」，TA自己的话标「我」。
- *
- * 注意：MARK_COMPACTED 里的「你的上下文」指TA的上下文，那个「你」是对的，别一起改。
+ * 解析说话人称呼映射：显式传参 > 环境变量 VERBATIM_SPEAKER_USER / VERBATIM_SPEAKER_ASSISTANT > 默认「他 / 我」。
+ * @param {{user?:string, assistant?:string, unknown?:string}|null|undefined} [labels]
+ * @returns {{user:string, assistant:string, unknown:string}}
  */
-export function speakerLabel(speaker) {
-  if (speaker === 'user') return '他';
-  if (speaker === 'assistant') return '我';
-  return '？';
+export function resolveSpeakerLabels(labels = null) {
+  const envUser = typeof process.env.VERBATIM_SPEAKER_USER === 'string' && process.env.VERBATIM_SPEAKER_USER.trim()
+    ? process.env.VERBATIM_SPEAKER_USER.trim()
+    : null;
+  const envAssistant = typeof process.env.VERBATIM_SPEAKER_ASSISTANT === 'string' && process.env.VERBATIM_SPEAKER_ASSISTANT.trim()
+    ? process.env.VERBATIM_SPEAKER_ASSISTANT.trim()
+    : null;
+  return {
+    user: (typeof labels?.user === 'string' && labels.user.trim()) ? labels.user.trim() : (envUser ?? DEFAULT_SPEAKER_LABELS.user),
+    assistant: (typeof labels?.assistant === 'string' && labels.assistant.trim()) ? labels.assistant.trim() : (envAssistant ?? DEFAULT_SPEAKER_LABELS.assistant),
+    unknown: (typeof labels?.unknown === 'string' && labels.unknown.trim()) ? labels.unknown.trim() : DEFAULT_SPEAKER_LABELS.unknown,
+  };
+}
+
+/**
+ * 说话人标签 —— **从TA自己的视角标**（默认：用户「他」、TA自己「我」，可通过参数或环境变量覆盖）。
+ */
+export function speakerLabel(speaker, labels = null) {
+  const map = resolveSpeakerLabels(labels);
+  if (speaker === 'user') return map.user;
+  if (speaker === 'assistant') return map.assistant;
+  return map.unknown;
 }
 
 /**
@@ -300,10 +359,11 @@ export function indentText(text, pad = '  ') {
  * @param {string} [pad]
  * @returns {string}
  */
-export function quoteLine(msg, pad = '  ') {
-  const body = clipText(msg?.text);
+export function quoteLine(msg, pad = '  ', opts = {}) {
+  const raw = String(msg?.text ?? '').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').trim();
+  const body = opts?.clip === false ? raw : clipText(raw);
   const lines = body.split('\n');
-  const label = `${pad}${speakerLabel(msg?.speaker)}：「`;
+  const label = `${pad}${speakerLabel(msg?.speaker, opts?.speakerLabels)}：「`;
   if (lines.length === 1) return `${label}${lines[0]}」`;
   // 续行缩进对齐；空行不补空格（补了会在终端里留一截看不见的尾空白）
   const joined = lines

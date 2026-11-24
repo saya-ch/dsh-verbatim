@@ -544,7 +544,7 @@ function renderBlock(block, opts) {
     if (prevIndex >= 0 && index > prevIndex + 1) lines.push('  ⋯');
     const baseClipped = clipText(msg.text);
     const annotated = opts.annotateMedia ? opts.annotateMedia(msg.id, baseClipped) : baseClipped;
-    lines.push(quoteLine(annotated !== msg.text ? { ...msg, text: annotated } : msg, Infinity));
+    lines.push(quoteLine(annotated !== msg.text ? { ...msg, text: annotated } : msg, '  ', { clip: false }));
     if (opts.includeExcluded && msg.excluded === 1) lines.push(`    ${MARK_EXCLUDED_ONE}`);
     prevIndex = index;
   }
