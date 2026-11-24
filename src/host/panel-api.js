@@ -58,8 +58,8 @@ const TIME_MAX = Number.MAX_SAFE_INTEGER;
 /** 「取该会话全部消息」的上限（库才几千条，够用且不用分页） */
 const ALL_ROWS = 5_000_000;
 
-/** 日志导出缓存最多留几个会话（45MB 日志解压后是纯 CPU，重复解太浪费） */
-const LOG_CACHE_MAX = 2;
+/** 日志导出缓存最多留几个会话（45MB 日志解压后是纯 CPU，多会话切换时适当保留） */
+const LOG_CACHE_MAX = 8;
 
 /** 会话日志文件清单的缓存时长（792 个目录的 stat，别每个请求都扫） */
 const SESSION_FILE_TTL_MS = 30_000;
@@ -105,6 +105,28 @@ export const PANEL_METHODS = Object.freeze([
   'mediaPreview',
   'setMediaCaption',
   'findDuplicateNotes',
+  'mergeNotes',
+  'setSceneGist',
+  'setMsgExcluded',
+  'updateNote',
+]);
+
+const WRITE_METHODS = new Set([
+  'set',
+  'batchSetSessionFlags',
+  'setExcludeRanges',
+  'rebuild',
+  'flag',
+  'unflag',
+  'deleteNote',
+  'restoreNote',
+  'addNote',
+  'setGlobalConfig',
+  'dbMaintain',
+  'mergeScene',
+  'splitScene',
+  'refineOneScene',
+  'setMediaCaption',
   'mergeNotes',
   'setSceneGist',
   'setMsgExcluded',
@@ -1994,6 +2016,16 @@ export function createPanelHandler(api, opts = {}) {
     }
 
     const method = p.slice('/panel.'.length);
+    if (req.method === 'GET' && WRITE_METHODS.has(method)) {
+      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', Allow: 'POST' });
+      res.end(JSON.stringify({
+        ok: false,
+        method: `panel.${method}`,
+        code: 'METHOD_NOT_ALLOWED',
+        error: `写操作 panel.${method} 必须使用 POST 请求`,
+      }));
+      return;
+    }
     const body = await readRequestBody(req);
     if (body === null) {
       return sendJson(res, { ok: false, code: 'BAD_JSON', error: '请求体不是合法 JSON 对象' }, 400);

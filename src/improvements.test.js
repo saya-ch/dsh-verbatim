@@ -283,8 +283,19 @@ test('4. 多会话 ensureFresh 按会话文件独立同步 + autoIndex 后台轻
 
   try {
     const invokePanel = async (method, queryObj = {}) => {
+      const isWrite = method === 'set';
       const qs = new URLSearchParams(queryObj).toString();
-      const req = { method: 'GET', url: `/verbatim-api/panel.${method}?${qs}`, on() {} };
+      const req = isWrite
+        ? {
+          method: 'POST',
+          url: `/verbatim-api/panel.${method}`,
+          headers: { 'content-type': 'application/json' },
+          on(ev, fn) {
+            if (ev === 'data') queueMicrotask(() => fn(Buffer.from(JSON.stringify(queryObj), 'utf8')));
+            if (ev === 'end') queueMicrotask(() => fn());
+          },
+        }
+        : { method: 'GET', url: `/verbatim-api/panel.${method}?${qs}`, on() {} };
       let statusCode = 0;
       let raw = '';
       const res = {

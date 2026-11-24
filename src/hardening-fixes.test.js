@@ -237,6 +237,12 @@ test('createPanelHandler：校验 Origin / sec-fetch-site 防跨站请求，放�
     const resMethod = makeRes();
     await handler(makeReq({ method: 'DELETE', url: '/verbatim-api/panel.dbOverview' }), resMethod);
     assert.equal(resMethod.result().status, 405);
+
+    // 写操作禁止通过 GET 调用（必须走 POST）
+    const resGetWrite = makeRes();
+    await handler(makeReq({ method: 'GET', url: '/verbatim-api/panel.dbMaintain?action=vacuum' }), resGetWrite);
+    assert.equal(resGetWrite.result().status, 405);
+    assert.equal(resGetWrite.result().body.code, 'METHOD_NOT_ALLOWED');
   } finally {
     handle.close();
   }

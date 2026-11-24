@@ -80,11 +80,23 @@ export function apply(ctx, config = {}) {
     return () => {};
   }
 
+  const writeJsonAtomic = (filePath, data) => {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(tmp, filePath);
+    } catch (e) {
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
+      throw e;
+    }
+  };
+
   const statusFile = path.join(dbPath === ':memory:' ? dbRoot : path.dirname(dbPath), 'plugin-status.json');
   const writeStatus = (patch) => {
     try {
       const prev = fs.existsSync(statusFile) ? JSON.parse(fs.readFileSync(statusFile, 'utf8')) : {};
-      fs.writeFileSync(statusFile, JSON.stringify({ ...prev, ...patch, at: new Date().toISOString() }, null, 2));
+      writeJsonAtomic(statusFile, { ...prev, ...patch, at: new Date().toISOString() });
     } catch { /* ignore */ }
   };
   const instanceId = Date.now() + '-' + Math.random().toString(36).slice(2, 7);
@@ -262,8 +274,7 @@ export function apply(ctx, config = {}) {
   const saveRefineBudget = () => {
     if (!budgetFile) return;
     try {
-      fs.mkdirSync(path.dirname(budgetFile), { recursive: true });
-      fs.writeFileSync(budgetFile, JSON.stringify(dailyRefineBudget, null, 2));
+      writeJsonAtomic(budgetFile, dailyRefineBudget);
     } catch { /* ignore */ }
   };
 
