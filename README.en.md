@@ -7,11 +7,12 @@
 <p align="center">Every word kept intact · Companion-first verbatim long-term memory plugin for DeepSeek Harness.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-0F172A" alt="Version 0.1.0">
+  <a href="https://www.npmjs.com/package/dsh-verbatim"><img src="https://img.shields.io/npm/v/dsh-verbatim?label=npm&color=CB3837" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-verbatim"><img src="https://img.shields.io/npm/dt/dsh-verbatim?label=downloads&color=2563EB" alt="npm downloads"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D24-339933?logo=node.js&logoColor=white" alt="Node >=24">
   <img src="https://img.shields.io/badge/storage-node%3Asqlite%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white" alt="node:sqlite + FTS5">
-  <a href=".github/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=github-actions&logoColor=white" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563EB" alt="MIT License"></a>
+  <a href="https://github.com/saya-ch/dsh-verbatim/actions/workflows/ci.yml"><img src="https://github.com/saya-ch/dsh-verbatim/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F172A" alt="MIT License"></a>
 </p>
 
 <p align="center">
@@ -63,28 +64,29 @@ Make sure **Node.js `>=24`** is installed (uses built-in `node:sqlite`, no nativ
 
 ### 1. Install & Mount
 
+#### Official DSH Desktop
+
+Install and enable `dsh-verbatim` from the **Plugins** page in DSH Desktop. Desktop profiles are managed by the app and do not use `--profile web` commands.
+
+#### DSH Web
+
+If `dsh` is installed globally, run:
+
+```powershell
+dsh plugin --profile web add dsh-verbatim@latest
+dsh --profile web
+```
+
+<details>
+<summary>Mount from source (git clone / pnpm dsh) or run CLI / MCP Server standalone</summary>
+
 ```powershell
 git clone https://github.com/saya-ch/dsh-verbatim.git
 cd dsh-verbatim
 npm install --no-audit --no-fund
 ```
 
-#### Official DSH Desktop
-
-Point to and enable the local `dsh-verbatim` directory from the **Plugins** page in DSH Desktop (the repository includes [cordis.patch.yml](cordis.patch.yml) and [package.json](package.json) manifests). Desktop profiles are managed by the app and do not use `--profile web` commands.
-
-#### DSH Web
-
-Mount this repository in your Web profile plugin configuration and start DSH:
-
-```powershell
-dsh --profile web
-```
-
-<details>
-<summary>Using DeepSeek Harness from source or standalone CLI / MCP Server</summary>
-
-In a DeepSeek Harness source checkout, run `pnpm dsh --profile web` with this plugin directory mounted.
+In a DeepSeek Harness source checkout, you can run `pnpm dsh plugin --profile web add dsh-verbatim@latest` or point directly to this repository (which includes [cordis.patch.yml](cordis.patch.yml) and [package.json](package.json) manifests).
 
 You can also use the CLI or run a standard stdio MCP Server standalone:
 

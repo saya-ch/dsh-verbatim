@@ -7,11 +7,12 @@
 <p align="center">Every word kept intact · 为 DeepSeek Harness 打造的陪伴向长期逐字记忆插件。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-0F172A" alt="版本 0.1.0">
+  <a href="https://www.npmjs.com/package/dsh-verbatim"><img src="https://img.shields.io/npm/v/dsh-verbatim?label=npm&color=CB3837" alt="npm 版本"></a>
+  <a href="https://www.npmjs.com/package/dsh-verbatim"><img src="https://img.shields.io/npm/dt/dsh-verbatim?label=downloads&color=2563EB" alt="npm 总下载量"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D24-339933?logo=node.js&logoColor=white" alt="Node >=24">
   <img src="https://img.shields.io/badge/storage-node%3Asqlite%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white" alt="node:sqlite + FTS5">
-  <a href=".github/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=github-actions&logoColor=white" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563EB" alt="MIT License"></a>
+  <a href="https://github.com/saya-ch/dsh-verbatim/actions/workflows/ci.yml"><img src="https://github.com/saya-ch/dsh-verbatim/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0F172A" alt="MIT License"></a>
 </p>
 
 <p align="center">
@@ -63,28 +64,29 @@
 
 ### 1. 安装与挂载
 
+#### 官方 DSH Desktop
+
+在应用的 **插件** 页面中安装并启用 `dsh-verbatim`。Desktop 的 profile 由应用管理，不适用下面的 `--profile web` 命令。
+
+#### DSH Web
+
+已安装 `dsh` 命令时，在终端执行：
+
+```powershell
+dsh plugin --profile web add dsh-verbatim@latest
+dsh --profile web
+```
+
+<details>
+<summary>从源码挂载（git clone / pnpm dsh）或独立使用 CLI / MCP Server</summary>
+
 ```powershell
 git clone https://github.com/saya-ch/dsh-verbatim.git
 cd dsh-verbatim
 npm install --no-audit --no-fund
 ```
 
-#### 官方 DSH Desktop
-
-在应用的 **插件** 页面中指向并启用本地 `dsh-verbatim` 目录（仓库已包含 [cordis.patch.yml](cordis.patch.yml) 与 [package.json](package.json) 声明）。Desktop 的 profile 由应用管理，不适用下面的 `--profile web` 命令。
-
-#### DSH Web
-
-将本仓库挂载到 Web profile 的插件配置后启动：
-
-```powershell
-dsh --profile web
-```
-
-<details>
-<summary>使用 DeepSeek Harness 源码模式或独立 CLI / MCP Server</summary>
-
-在 DeepSeek Harness 源码目录中使用 `pnpm dsh --profile web` 启动并加载本插件目录。
+在 DeepSeek Harness 源码目录中可使用 `pnpm dsh plugin --profile web add dsh-verbatim@latest` 或指向本仓库目录挂载（仓库已包含 [cordis.patch.yml](cordis.patch.yml) 与 [package.json](package.json) 声明）。
 
 如果你希望脱离插件界面单独导入、检索或作为标准 MCP Server（stdio）挂载到其他客户端：
 

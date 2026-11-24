@@ -30,8 +30,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "dsh-verbatim": "./bin/cli.mjs",
-    "dsh-verbatim-mcp": "./bin/mcp-memory.mjs"
+    "dsh-verbatim": "bin/cli.mjs",
+    "dsh-verbatim-mcp": "bin/mcp-memory.mjs"
   },
   "files": [
     "index.js",
