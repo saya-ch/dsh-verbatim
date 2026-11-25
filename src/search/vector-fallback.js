@@ -277,7 +277,8 @@ export function createFallbackVectorIndex({
     ensureLoaded(kind);
     const existed = maps[kind].delete(Number(id));
     if (ensureTables()) {
-      stmt(`DELETE FROM ${FALLBACK_TABLES[kind]} WHERE ${PK_COLS[kind]} = ?`).run(Number(id));
+      const changes = Number(stmt(`DELETE FROM ${FALLBACK_TABLES[kind]} WHERE ${PK_COLS[kind]} = ?`).run(Number(id)).changes ?? 0);
+      return existed || changes > 0 ? 1 : 0;
     }
     return existed ? 1 : 0;
   }
@@ -296,8 +297,8 @@ export function createFallbackVectorIndex({
       for (const id of ids) {
         try {
           const existed = maps[kind].delete(id);
-          if (del) del.run(id);
-          if (!countRemovedByExistence || existed) removed += 1;
+          const changes = del ? Number(del.run(id).changes ?? 0) : 0;
+          if (!countRemovedByExistence || existed || changes > 0) removed += 1;
         } catch (err) {
           if (!ignoreErrors) throw err;
         }
@@ -313,6 +314,7 @@ export function createFallbackVectorIndex({
   function clear(kind, { ensureFirst = false, ignoreErrors = false } = {}) {
     if (ensureFirst) ensureLoaded(kind);
     maps[kind].clear();
+    cappedKinds[kind] = false;
     if (ensureTables()) {
       try {
         db.exec(`DELETE FROM ${FALLBACK_TABLES[kind]}`);
@@ -429,6 +431,17 @@ export function createFallbackVectorIndex({
    */
   function missingIds(kind, ids) {
     ensureLoaded(kind);
+    if (cappedKinds[kind] && fallbackTableReady) {
+      const present = new Set();
+      const col = PK_COLS[kind];
+      for (let i = 0; i < ids.length; i += 400) {
+        const slice = ids.slice(i, i + 400);
+        const ph = new Array(slice.length).fill('?').join(', ');
+        const rows = db.prepare(`SELECT ${col} AS id FROM ${FALLBACK_TABLES[kind]} WHERE ${col} IN (${ph})`).all(...slice);
+        for (const r of rows) present.add(Number(r.id));
+      }
+      return ids.filter((id) => !present.has(id));
+    }
     syncIfStale(kind);
     return ids.filter((id) => !maps[kind].has(id));
   }
