@@ -511,6 +511,10 @@ export function createDbAdmin({
     const runBounded = (conn) => {
       const s = conn.prepare(sql);
       for (const r of s.iterate()) {
+        if (Date.now() - t0 > 3000) {
+          truncated = true;
+          break;
+        }
         if (collected.length >= limit) {
           truncated = true;
           break;

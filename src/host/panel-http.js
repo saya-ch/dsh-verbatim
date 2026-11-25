@@ -49,7 +49,6 @@ export const PANEL_METHODS = Object.freeze([
 /** 写操作强制走 POST */
 export const WRITE_METHODS = new Set([
   'set',
-  'batchSetSessionFlags',
   'setExcludeRanges',
   'rebuild',
   'flag',
