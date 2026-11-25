@@ -74,9 +74,9 @@ const hr = (ch = '─', len = 64) => ch.repeat(len);
 /**
  * 打印导出统计。
  *
- * @param {object} result  exportMessages() 的返回值
- * @param {object} readerStats  readSessionFile() 的 stats
- * @param {object} [opts]
+ * @param {any} result  exportMessages() 的返回值
+ * @param {any} readerStats  readSessionFile() 的 stats
+ * @param {any} [opts]
  */
 export function printExportStats(result, readerStats, opts = {}) {
   const s = result.stats;
@@ -287,7 +287,7 @@ function readConfigArg(arg, label) {
  * 从各种可能的配置形状里取出 excludeRanges 数组。
  * 支持：数组本身 / { excludeRanges: [...] } / { range: [...] }
  *
- * @param {unknown} cfg
+ * @param {any} cfg
  * @returns {Array<{from: unknown, to: unknown, reason?: string}>}
  */
 function pickExcludeRanges(cfg) {
@@ -304,9 +304,9 @@ function pickExcludeRanges(cfg) {
  *   2. --config <file>
  *   3. 自动找 <cwd>/sessions/<sessionId>.json
  *
- * @param {object} opts parseExportArgs 的结果
+ * @param {any} opts parseExportArgs 的结果
  * @param {string} sessionId
- * @returns {{ ranges: object[], source: string|null }}
+ * @returns {{ ranges: any[], source: string|null }}
  */
 function resolveExcludeRanges(opts, sessionId) {
   if (opts.excludeRangesArg !== undefined && opts.excludeRangesArg !== null) {

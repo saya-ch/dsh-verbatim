@@ -329,7 +329,7 @@ function toNormalized(ranges, opts) {
  * @param {Array<{from:unknown,to:unknown,reason?:string}>|Array<{from:number,to:number}>} ranges
  *   配置原样（字符串）或归一化后的都行
  * @param {{ path?: string }} [opts]
- * @returns {{from:number, to:number, reason:string|null}|null} 命中返回该区间，否则 null
+ * @returns {{from:number, to:number, reason?:string|null}|null} 命中返回该区间，否则 null
  * @throws {ConfigError} 区间非法时（配置错误必须抛，不能静默不排除）
  */
 export function findRange(at, ranges, opts = {}) {

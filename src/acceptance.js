@@ -207,7 +207,7 @@ export function parseTimelineHeaders(text) {
 
 /**
  * 准备好一次验收需要的全部东西：库、工具、日志真值。
- * @param {object} [opts]
+ * @param {Record<string, any>} [opts]
  */
 export async function prepareContext(opts = {}) {
   const sessionFile = opts.sessionFile ?? DEFAULT_SESSION_FILE;
@@ -707,7 +707,7 @@ export async function check5(ctx) {
     ]);
   }
 
-  const lines = [`库统计：${n(stats.msgs)} 条 / ${n(stats.scenes)} 场 / 排除 ${n(stats.excludedMsgs)} 条 / ${fmtSpan(stats.firstAt, stats.lastAt)}`];
+  const lines = [`库统计：${n(stats.msgs)} 条 / ${n(stats.scenes)} 场 / 排除 ${n(stats.excludedMsgs)} 条 / ${fmtSpan(stats.firstAt, stats.lastAt, undefined)}`];
   for (const c of cases) {
     lines.push('');
     lines.push(`▸ ${c.label}`);
@@ -767,7 +767,7 @@ export async function check6(ctx) {
   const lines = [
     `库里 ${n(all.length)} 条 / ${n(dbChars)} 字；日志导出 ${n(ctx.truth.messages.length)} 条 / ${n(logCharsAll)} 字` +
       `（本次运行期间日志又长了 ${n(ctx.truth.messages.length - all.length)} 条，总量比对按库内 seq 交集算：${n(logPart.length)} 条 / ${n(logChars)} 字）`,
-    `抽样 ${sample.length} 条（每 ${step} 条取一条，横跨 ${fmtSpan(all[0]?.at, all.at(-1)?.at)}）：`,
+    `抽样 ${sample.length} 条（每 ${step} 条取一条，横跨 ${fmtSpan(all[0]?.at, all.at(-1)?.at, undefined)}）：`,
     ...rows,
     '',
     `逐字差异：${diff} 条；交集字数差异：${dbChars - logChars} 字`,
@@ -960,8 +960,8 @@ export async function checkB(ctx) {
 
 /**
  * 跑全部验收。
- * @param {object} [opts] 见 prepareContext；另有 quiet
- * @returns {Promise<{results: object[], summary: object}>}
+ * @param {Record<string, any>} [opts] 见 prepareContext；另有 quiet
+ * @returns {Promise<Record<string, any>>}
  */
 export async function runAcceptance(opts = {}) {
   const startedAt = Date.now();
@@ -975,7 +975,7 @@ export async function runAcceptance(opts = {}) {
   const stats = ctx.extras.stats.get();
   out(
     ` 规模  ${n(stats.msgs)} 条 / ${n(stats.chars)} 字 / ${n(stats.scenes)} 场；` +
-      `排除 ${n(stats.excludedMsgs)} 条 / ${n(stats.excludedChars)} 字；${fmtSpan(stats.firstAt, stats.lastAt)}`,
+      `排除 ${n(stats.excludedMsgs)} 条 / ${n(stats.excludedChars)} 字；${fmtSpan(stats.firstAt, stats.lastAt, undefined)}`,
   );
   out(` hasVec=${ctx.store.hasVec}  会话配置里的排除区间 ${ctx.truth.stats.excludeRanges.length} 个`);
 

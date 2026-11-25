@@ -70,8 +70,8 @@ export function spansOverlap(a, b) {
  *     **跨路则是组内各取最好名次求和** —— 窗口继承组内关键词路的名次，单句继承组内向量路的名次，
  *     既不会让簇靠数量刷分压过精确命中，也不会让真正的联合证据被拆散。
  *
- * @param {object[][]} hitLists 各路命中（顺序即该路名次）
- * @returns {{keyOf: (hit: object) => any, groupCount: number, groupSizes: number[]}}
+ * @param {any[][]} hitLists 各路命中（顺序即该路名次）
+ * @returns {{keyOf: (hit: any) => any, groupCount: number, groupSizes: number[]}}
  */
 export function createSpanIndex(hitLists = []) {
   const items = [];
@@ -126,13 +126,13 @@ export function createSpanIndex(hitLists = []) {
  * **绝不改动主项的排序**（394 题实测：抬分会让精确短句从 #1 掉到 #2，24 题劣化）。
  * 需要跨路合并时优先用 `createSpanIndex` + RRF 的 `keyOf`（组内每路取最好名次）。
  *
- * @param {object[]} hits 已按优先级/分数降序排好的候选列表
+ * @param {any[]} hits 已按优先级/分数降序排好的候选列表
  * @param {{
  *   mode?: 'score' | 'rrf' | 'keyword',
  *   limit?: number,
  *   aggregate?: boolean,
  * }} [opts]
- * @returns {object[]}
+ * @returns {any[]}
  */
 export function dedupeBySpan(hits, opts = {}) {
   if (!Array.isArray(hits) || hits.length === 0) return [];
@@ -240,11 +240,11 @@ export function dedupeBySpan(hits, opts = {}) {
  * 多词查询（>=2 词）时，优先让「同时包含全部查询词」的命中（无论是单句还是跨句对话窗）排在
  * 仅命中部分词的 FTS OR 单句前面，随后按区间去重，避免单句与包含它的对话窗重复占位。
  *
- * @param {object[]} msgRows 单句关键词命中
- * @param {object[]} winRows 对话窗多词 AND 命中（已 hydrate）
- * @param {string[]} terms 切分后的查询词
+ * @param {any[]} [msgRows] 单句关键词命中
+ * @param {any[]} [winRows] 对话窗多词 AND 命中（已 hydrate）
+ * @param {string[]} [terms] 切分后的查询词
  * @param {{limit?: number}} [opts]
- * @returns {object[]}
+ * @returns {any[]}
  */
 export function mergeKeywordHits(msgRows = [], winRows = [], terms = [], opts = {}) {
   if (winRows.length === 0) return dedupeBySpan(msgRows, { mode: 'keyword', limit: opts.limit });

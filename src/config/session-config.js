@@ -194,20 +194,22 @@ export function validateSessionConfig(input, opts = {}) {
     out[key] = v;
   }
 
-  out.excludeRanges = sanitizeExcludeRanges(input.excludeRanges, `${at}.excludeRanges`);
+  /** @type {any} */
+  const inputObj = input;
+  out.excludeRanges = sanitizeExcludeRanges(inputObj.excludeRanges, `${at}.excludeRanges`);
 
   // 未知字段原样保留（写回时不丢），只在需要时告警
   const unknown = [];
-  for (const key of Object.keys(input)) {
+  for (const key of Object.keys(inputObj)) {
     if (CONFIG_KEYS.includes(key)) continue;
-    out[key] = input[key];
+    out[key] = inputObj[key];
     unknown.push(key);
   }
   if (unknown.length && onWarn) {
     onWarn(`${at}：有未知配置项 ${unknown.map((k) => JSON.stringify(k)).join(', ')}，已保留但不会被使用`);
   }
 
-  return out;
+  return /** @type {{ record: boolean, tools: boolean, autoRecall: boolean, excludeRanges: any[] }} */ (out);
 }
 
 /**
@@ -222,8 +224,8 @@ export function validateSessionConfig(input, opts = {}) {
 function sanitizeExcludeRanges(raw, at) {
   if (raw === undefined || raw === null) return [];
   // 复用严格校验：抛错即配置非法；返回值只用于校验，不写回配置
-  normalizeRanges(raw, { path: at });
-  return raw.map((r) => {
+  normalizeRanges(/** @type {any} */ (raw), { path: at });
+  return /** @type {any[]} */ (raw).map((r) => {
     const item = { from: r.from, to: r.to };
     if (typeof r.reason === 'string' && r.reason.trim()) item.reason = r.reason.trim();
     return item;
@@ -240,7 +242,7 @@ function sanitizeExcludeRanges(raw, at) {
  */
 export function loadSessionConfig(sessionId, opts = {}) {
   const file = sessionConfigPath(sessionId, opts);
-  const onWarn = typeof opts?.onWarn === 'function' ? opts.onWarn : undefined;
+  const onWarn = typeof opts === 'object' && opts !== null && typeof opts.onWarn === 'function' ? opts.onWarn : undefined;
 
   if (!fs.existsSync(file)) return defaultSessionConfig();
 
@@ -286,7 +288,7 @@ export function loadSessionConfig(sessionId, opts = {}) {
  */
 export function saveSessionConfig(sessionId, patch, opts = {}) {
   const file = sessionConfigPath(sessionId, opts);
-  const onWarn = typeof opts?.onWarn === 'function' ? opts.onWarn : undefined;
+  const onWarn = typeof opts === 'object' && opts !== null && typeof opts.onWarn === 'function' ? opts.onWarn : undefined;
 
   if (patch !== undefined && patch !== null && (typeof patch !== 'object' || Array.isArray(patch))) {
     throw new ConfigError(`saveSessionConfig 的 patch 必须是对象，实际是 ${typeName(patch)}`, {
@@ -370,7 +372,7 @@ export function setSessionExcludeRanges(sessionId, ranges, opts = {}) {
  */
 export function loadSessionExcludeRanges(sessionId, opts = {}) {
   const cfg = loadSessionConfig(sessionId, opts);
-  return normalizeRanges(cfg.excludeRanges, { path: `${sessionConfigPath(sessionId, opts)}.excludeRanges` });
+  return normalizeRanges(/** @type {any} */ (cfg.excludeRanges), { path: `${sessionConfigPath(sessionId, opts)}.excludeRanges` });
 }
 
 /**
@@ -398,7 +400,7 @@ export function ensureSessionConfig(sessionId, opts = {}) {
  * 面板 `panel.status → enabled` 的形状（PANEL.md §5）。
  * `autoRecall` 恒带在返回值里（协议稳定），但面板不渲染开关（D-166）。
  *
- * @param {object} cfg
+ * @param {any} cfg
  * @returns {{ record: boolean, tools: boolean, autoRecall: boolean }}
  */
 export function enabledOf(cfg) {

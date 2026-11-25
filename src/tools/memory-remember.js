@@ -104,8 +104,8 @@ let defaultStore = null;
  *
  * 另外接受 `{ memory: {...} }` 包一层，方便宿主把整个记忆子系统的依赖塞在一个字段里。
  *
- * @param {object} [ctx]
- * @returns {{db: object|null, repo: object, extras: object, handle: object|null}}
+ * @param {Record<string, any>} [ctx]
+ * @returns {{db: any, repo: any, extras: any, handle: any}}
  */
 export function resolveStore(ctx = {}) {
   const source = ctx?.memory && typeof ctx.memory === 'object' ? ctx.memory : (ctx ?? {});
@@ -152,7 +152,7 @@ export function resolveStore(ctx = {}) {
  * 在一个事务里跑 fn。拿到连接就用 withTx（嵌套自动 SAVEPOINT），
  * 拿不到（mock 场景）就直接跑——**绝不因为"没连接"而让写操作失败**。
  * @template T
- * @param {object|null} db
+ * @param {any} db
  * @param {() => T} fn
  * @returns {T}
  */
@@ -172,12 +172,12 @@ function nowOf(ctx) {
  * 记一条笔记（memory_remember 的核心逻辑，返回结构化结果便于测试/面板复用）。
  *
  * @param {{content?: string, about?: string}} [args]
- * @param {object} [ctx] 见 resolveStore 的说明；另支持 `ctx.now` / `ctx.sessionId`
+ * @param {Record<string, any>} [ctx] 见 resolveStore 的说明；另支持 `ctx.now` / `ctx.sessionId`
  * @returns {Promise<{ok: true, id: number, at: number, about: string|null,
  *                    sessionId: string|null, content: string, text: string} |
  *                   {ok: false, error: string, text: string}>}
  */
-export async function rememberNote(args = {}, ctx = {}) {
+export async function rememberNote(args = {}, ctx = /** @type {Record<string, any>} */ ({})) {
   const raw = args.content;
   const now = nowOf(ctx);
   // A1：这条笔记归哪个会话。绑定会话的工具记进去的笔记带 session_id，
@@ -216,12 +216,16 @@ export async function rememberNote(args = {}, ctx = {}) {
   if (args.about !== undefined && args.about !== null && String(args.about).trim() !== '') {
     const value = String(args.about).trim().toLowerCase();
     if (!ABOUT_VALUES.includes(value)) {
+      const aboutLabels = ctx?.aboutLabels ?? null;
+      const hintMe = noteAboutLabel('me', aboutLabels);
+      const hintHim = noteAboutLabel('him', aboutLabels);
+      const hintUs = noteAboutLabel('us', aboutLabels);
       return {
         ok: false,
         error: 'bad_about',
         text: [
           `这条没记成：about 只认 ${ABOUT_VALUES.join(' / ')}，收到「${String(args.about)}」。`,
-          'me = 关于你自己 · him = 关于他（用户）· us = 关于你们俩。拿不准就别填，空着也一样能记。',
+          `me = ${hintMe} · him = ${hintHim} · us = ${hintUs}。拿不准就别填，空着也一样能记。`,
         ].join('\n'),
       };
     }
@@ -275,7 +279,7 @@ export async function rememberNote(args = {}, ctx = {}) {
         '',
         [
           `笔记 #${id}`,
-          about ? noteAboutLabel(about) : null,
+          about ? noteAboutLabel(about, ctx?.aboutLabels ?? null) : null,
           formatWhen(now, now),
         ]
           .filter(Boolean)

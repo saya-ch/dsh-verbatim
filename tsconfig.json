@@ -6,7 +6,7 @@
     "lib": ["ES2023", "DOM"],
     "types": ["node"],
     "allowJs": true,
-    "checkJs": false,
+    "checkJs": true,
     "noEmit": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
@@ -23,6 +23,7 @@
   "exclude": [
     "node_modules",
     "src/client/**",
-    "src/**/*.test.js"
+    "src/**/*.test.js",
+    "src/**/_test-entry.js"
   ]
 }

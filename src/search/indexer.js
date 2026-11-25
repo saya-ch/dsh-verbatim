@@ -67,7 +67,7 @@ const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
  * 但**已有表的维度是建表时定死的**，改维度必须重建库 —— 这里的失配必须明确报错，
  * 不能静默写入错位向量。
  *
- * @param {object} db
+ * @param {any} db
  * @param {number} dim
  */
 function verifyStoredDim(db, dim) {
@@ -91,15 +91,15 @@ function verifyStoredDim(db, dim) {
  * 创建索引器。
  *
  * @param {{
- *   handle: { db: object, hasVec?: boolean },   // openDb() 的返回值（必需）
- *   provider: { id: string, dim: number, maxBatch: number, embed(texts, signal?): Promise<Float32Array[]> },
- *   extras?: object,                            // 不传就自己 createExtras(handle)
- *   store?: object,                             // 不传就自己 createVectorStore(handle, { dim })
+ *   handle: any,   // openDb() 的返回值（必需）
+ *   provider: { id: string, dim: number, maxBatch: number, embed(texts: any, signal?: any): Promise<Float32Array[]> },
+ *   extras?: any,                            // 不传就自己 createExtras(handle)
+ *   store?: any,                             // 不传就自己 createVectorStore(handle, { dim })
  *   logger?: { warn(msg: string): void, info?(msg: string): void },
  *   onProgress?: (info: {phase: string, done: number, total: number}) => void,
- * }} opts
+ * }} [opts]
  */
-export function createIndexer(opts = {}) {
+export function createIndexer(opts = /** @type {any} */ ({})) {
   const { handle } = opts;
   const db = handle?.db ?? handle;
   if (!db) throw new TypeError('createIndexer: 需要 openDb() 返回的 handle');
@@ -168,7 +168,7 @@ export function createIndexer(opts = {}) {
           + '为避免写入残缺的向量索引，这一批已放弃（下次会重试）。',
         );
       }
-      const pairs = slice.map((e, j) => [Number(e.id), vecs[j]]);
+      const pairs = slice.map((e, j) => /** @type {[number, Float32Array]} */ ([Number(e.id), vecs[j]]));
       writeFn(pairs);
       written += pairs.length;
       o.onBatch?.(pairs.length, written, entries.length);
@@ -237,8 +237,8 @@ export function createIndexer(opts = {}) {
    * 记账口径不变：**所有行**（不管长短）最后都 vecMeta.set(ids)。
    * 否则长消息会被 pending() 反复捞出来，永远建不完。
    *
-   * @param {object[]} rows MsgRow[]
-   * @param {{signal?: AbortSignal}} [o]
+   * @param {any[]} rows MsgRow[]
+   * @param {{signal?: AbortSignal, onStep?: Function}} [o]
    */
   async function indexRows(rows, o = {}) {
     if (!Array.isArray(rows) || rows.length === 0) return { indexed: 0, batches: 0, chunks: 0 };
@@ -371,7 +371,7 @@ export function createIndexer(opts = {}) {
 
     /**
      * 模型一致性检查（不抛）。
-     * @returns {{ok: boolean, model: string|null, dim: number|null, reason?: string}}
+     * @returns {Record<string, any>}
      */
     check() {
       let meta;
@@ -411,8 +411,7 @@ export function createIndexer(opts = {}) {
 
     /**
      * 索引现状。
-     * @returns {{total:number, indexed:number, hasPending:boolean, consistent:boolean,
-     *            model:string|null, dim:number|null, vectors:number, chunks:number}}
+     * @returns {Record<string, any>}
      */
     status() {
       let meta = { indexed: 0, model: null, dim: null };
@@ -462,7 +461,7 @@ export function createIndexer(opts = {}) {
 
     /**
      * 增量索引：把 pending() 捞到的都嵌掉，直到捞不到或到达 limit。
-     * @param {{limit?: number, sessionId?: string|null, includeExcluded?: boolean, signal?: AbortSignal, onProgress?: Function}} [o]
+     * @param {{limit?: number, sessionId?: string|null, includeExcluded?: boolean, signal?: AbortSignal, onProgress?: Function, onStep?: Function}} [o]
      * @returns {Promise<{indexed:number, chunks:number, batches:number, totalPending:number, hasMore:boolean, elapsedMs:number}>}
      */
     async indexPending(o = {}) {
@@ -534,7 +533,7 @@ export function createIndexer(opts = {}) {
      * 立刻给指定消息建索引（「新 msg 立刻入索引」的增量路径）。
      * 不查 pending，直接在给定行上算 —— 上层刚 insertMsg 完就可以调它。
      *
-     * @param {object[]} msgs MsgRow[]
+     * @param {any[]} msgs MsgRow[]
      * @param {{signal?: AbortSignal}} [o]
      * @returns {Promise<number>} 索引条数
      */
@@ -560,7 +559,7 @@ export function createIndexer(opts = {}) {
      *   `skippedReasons.emptyGist`   —— gist 还没生成（多半是时序反了）
      *   `skippedReasons.embedFailed` —— embedding 调用真的失败（网络/额度）
      *
-     * @param {object[]} scenes SceneRow[]（需要 id + gist）
+     * @param {any[]} scenes SceneRow[]（需要 id + gist）
      * @returns {Promise<{indexed:number, skipped:number,
      *            skippedReasons:{emptyGist:number, embedFailed:number},
      *            reason:string|null, failed:boolean, warnings:string[]}>}
@@ -758,6 +757,7 @@ export function createIndexer(opts = {}) {
           );
           withTx(db, () => {
             for (let t = 0; t < threads.length; t += 1) {
+              /** @type {any} */
               const th = threads[t];
               const res = ins.run(
                 String(exRows[0].sessionId),
@@ -792,11 +792,10 @@ export function createIndexer(opts = {}) {
     /**
      * 全量重建。
      *
-     * @param {{force?: boolean, scenes?: object[], signal?: AbortSignal}} [o]
+     * @param {{force?: boolean, scenes?: any[], notes?: any[], windows?: boolean, signal?: AbortSignal, onProgress?: Function}} [o]
      *   force  —— 模型换了必须 force（否则 assertModel 抛）
      *   scenes —— 传了就顺便重建场景向量
-     * @returns {Promise<{msgs:number, scenes:object|null, forced:boolean,
-     *            batches:number, chunks:number, elapsedMs:number}>}
+     * @returns {Promise<Record<string, any>>}
      */
     async rebuild(o = {}) {
       const startedAt = Date.now();
@@ -827,11 +826,11 @@ export function createIndexer(opts = {}) {
         // 重建是「先清后建」，所以失败时旧索引已经不在了。
         // 之前这个后果只表现为「面板显示还没建索引」，用户会以为本来就没有 ——
         // 点第二次、第三次，每次都失败且每次都重新清空。
-        const err = new Error(
+        const err = /** @type {Error & { code?: string, clearedVectors?: number }} */ (new Error(
           `重建没成功：${e?.message ?? e}\n`
           + `注意：重建是先把旧索引清空再重算，所以这一刻库里没有可用的向量`
           + `（清空之前有 ${before} 条）。原文一条没动，重试一次就能恢复。`,
-        );
+        ));
         err.code = 'REBUILD_AFTER_RESET';
         err.clearedVectors = before;
         throw err;

@@ -46,7 +46,7 @@ function cleanText(raw) {
 
 /**
  * 格式化窗口文本：保留说话人前缀与原始逐字内容，不改写、不摘要。
- * @param {object[]} msgs
+ * @param {any[]} msgs
  * @returns {string}
  */
 export function formatWindowText(msgs) {
@@ -63,9 +63,9 @@ export function formatWindowText(msgs) {
  *   3) text.length >= skipMsgChars（长消息由 vec_msg / vec_chunk 负责）
  *   4) 与前一条时间间隔 > maxGapMs
  *
- * @param {object[]} msgs 按 at/seq 升序排列的同场消息
+ * @param {any[]} msgs 按 at/seq 升序排列的同场消息
  * @param {{skipMsgChars?: number, maxGapMs?: number}} [opts]
- * @returns {object[][]}
+ * @returns {any[][]}
  */
 export function splitShortRuns(msgs, opts = {}) {
   const skipMsgChars = Number.isFinite(opts.skipMsgChars) ? opts.skipMsgChars : WINDOW_SKIP_MSG_CHARS;
@@ -106,7 +106,7 @@ export function splitShortRuns(msgs, opts = {}) {
 /**
  * 为同一场景的消息列表构建自适应滑动对话窗（50% 重叠）。
  *
- * @param {object[]} msgs 同场景内消息（若未排序，内部按 at ASC, seq ASC, id ASC 排序）
+ * @param {any[]} msgs 同场景内消息（若未排序，内部按 at ASC, seq ASC, id ASC 排序）
  * @param {{
  *   sceneId?: number,
  *   sessionId?: string,
@@ -237,8 +237,8 @@ const SHORT_CTX_TOTAL_MAX = 700;
  * 且时间间隔 ≤ maxGapMs。满足「前邻或后邻任一合格」即视为被窗口覆盖，
  * 调用方应直接嵌原文（窗口向量已承担上下文职责，不重复）。
  *
- * @param {object} msg 锚点消息（含 id/at/sceneId/text/excluded）
- * @param {object[]} sceneMsgs 同场消息（按 at/seq/id 升序，未排序内部会排）
+ * @param {any} msg 锚点消息（含 id/at/sceneId/text/excluded）
+ * @param {any[]} sceneMsgs 同场消息（按 at/seq/id 升序，未排序内部会排）
  * @param {{skipMsgChars?: number, maxGapMs?: number}} [opts]
  * @returns {boolean} true = 有窗口覆盖（直接嵌原文）
  */
@@ -273,8 +273,8 @@ export function hasWindowCoverage(msg, sceneMsgs, opts = {}) {
  *
  * 有窗口覆盖的消息返回 null（调用方嵌原文，避免与窗口向量重复）。
  *
- * @param {object} msg 锚点消息
- * @param {object[]} sceneMsgs 同场消息
+ * @param {any} msg 锚点消息
+ * @param {any[]} sceneMsgs 同场消息
  * @returns {string|null} 上下文文本（null = 有覆盖，不用补）
  */
 export function buildShortContext(msg, sceneMsgs) {

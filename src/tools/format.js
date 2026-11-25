@@ -391,11 +391,16 @@ export const NOTE_ABOUT_LABELS = Object.freeze({
 /**
  * 取 note.about 的展示标签，认不出返回 null（不猜、不硬编）。
  * @param {string|null|undefined} about
+ * @param {Record<string, string>|null} [aboutLabels]
  * @returns {string|null}
  */
-export function noteAboutLabel(about) {
+export function noteAboutLabel(about, aboutLabels = null) {
   if (!about) return null;
-  return NOTE_ABOUT_LABELS[String(about)] ?? null;
+  const key = String(about);
+  if (aboutLabels && typeof aboutLabels[key] === 'string' && aboutLabels[key].trim()) {
+    return aboutLabels[key].trim();
+  }
+  return NOTE_ABOUT_LABELS[key] ?? null;
 }
 
 /**
@@ -410,11 +415,16 @@ export const NOTE_ABOUT_WORDS = Object.freeze({
 
 /**
  * @param {string|null|undefined} about
+ * @param {Record<string, string>|null} [aboutLabels]
  * @returns {string|null} 认不出返回 null
  */
-export function noteAboutWord(about) {
+export function noteAboutWord(about, aboutLabels = null) {
   if (!about) return null;
-  return NOTE_ABOUT_WORDS[String(about)] ?? null;
+  const key = String(about);
+  if (aboutLabels && typeof aboutLabels[key] === 'string' && aboutLabels[key].trim()) {
+    return aboutLabels[key].trim().replace(/^关于/, '');
+  }
+  return NOTE_ABOUT_WORDS[key] ?? null;
 }
 
 /**

@@ -40,9 +40,9 @@ function clipMid(text, headLen, tailLen) {
  * Step 1: 合并同场景内连续同说话人的短消息为逻辑 Turn。
  * 遇以下情况断开：说话人改变 / 间隔超过 maxGapMs / 合并后字数超过 maxChars / excluded=1。
  *
- * @param {object[]} msgs 按时间升序的消息列表
+ * @param {any[]} msgs 按时间升序的消息列表
  * @param {{maxGapMs?: number, maxChars?: number}} [opts]
- * @returns {object[]}
+ * @returns {any[]}
  */
 export function coalesceTurns(msgs, opts = {}) {
   const maxGapMs = Number.isFinite(opts.maxGapMs) ? opts.maxGapMs : TURN_MAX_GAP_MS;
@@ -85,9 +85,9 @@ export function coalesceTurns(msgs, opts = {}) {
 /**
  * Step 2: 把连续的 User Turn + Assistant Turn 配对为语义完整的 Exchange（一问一答交互对）。
  *
- * @param {object[]} turns coalesceTurns 的输出
+ * @param {any[]} turns coalesceTurns 的输出
  * @param {{maxGapMs?: number}} [opts]
- * @returns {object[]}
+ * @returns {any[]}
  */
 export function buildExchanges(turns, opts = {}) {
   const maxGapMs = Number.isFinite(opts.maxGapMs) ? opts.maxGapMs : EXCHANGE_MAX_GAP_MS;
@@ -144,7 +144,7 @@ export function buildExchanges(turns, opts = {}) {
  * 不依赖全局死阈值：根据当前场景内相邻 Exchange 的余弦相似度均值与标准差，
  * 在明显跌落且形成局部谷值的地方断开；同时保留硬时间断层与长度上限。
  *
- * @param {object[]} exchanges 同场景内的 Exchange 列表（若已嵌入，每项带 .vec Float32Array）
+ * @param {any[]} exchanges 同场景内的 Exchange 列表（若已嵌入，每项带 .vec Float32Array）
  * @param {{
  *   maxGapMs?: number,
  *   maxExchanges?: number,
@@ -250,10 +250,10 @@ export function segmentThreadsByValley(exchanges, opts = {}) {
  * 将较后的相似命中折叠进主命中的 `timelineThreadIds` / `relatedTimeline` 中，
  * 释放 Top-K 名额给其他独立事件，同时保留完整的跨天故事脉络。
  *
- * @param {object[]} hits 已排序的候选列表
- * @param {(hit: object) => Float32Array|null} getVec 获取命中代表向量（归一化）
+ * @param {any[]} hits 已排序的候选列表
+ * @param {(hit: any) => Float32Array|null} getVec 获取命中代表向量（归一化）
  * @param {{ threshold?: number, limit?: number }} [opts]
- * @returns {object[]}
+ * @returns {any[]}
  */
 export function foldTimelineClusters(hits, getVec, opts = {}) {
   const list = Array.isArray(hits) ? hits : [];

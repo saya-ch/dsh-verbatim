@@ -179,8 +179,8 @@ export function introducesTopic(text) {
  * 排序 + 校验：按时刻升序，同一时刻按 seq 升序（保证切分结果可复现）。
  * 只复制数组，不复制消息对象——场景里的 msgs 仍是调用方传进来的那些对象。
  *
- * @param {object[]} messages
- * @returns {object[]}
+ * @param {any[]} messages
+ * @returns {any[]}
  */
 export function sortMessages(messages) {
   if (!Array.isArray(messages)) {
@@ -209,8 +209,8 @@ export function sortMessages(messages) {
  *                         规则被「2 分钟连续回应」否决了，属预期行为，如实记录
  *   - seqFrom / seqTo     本场最小 / 最大 seq（T1 的 sceneAssign.assignSeqRange 用）
  *
- * @param {object[]} msgs 已按时间升序
- * @returns {object}
+ * @param {any[]} msgs 已按时间升序
+ * @returns {Record<string, any>}
  */
 function makeScene(msgs) {
   let excludedCount = 0;
@@ -441,7 +441,7 @@ function absorbOrphanGroups(groups, opts = {}) {
  *   - 阶段 B（可选语义精修）：传入 `opts.vectors` 时，对长段运行零 LLM 成本的 TextTiling
  *   - 后处理：吸收连续对话中的 1~2 条碎片场（不跨会话/压缩点/长沉默）
  *
- * @param {object[]} messages 消息数组，顺序无所谓（内部会按时间排）
+ * @param {any[]} messages 消息数组，顺序无所谓（内部会按时间排）
  * @param {{
  *   gapCutMs?: number,              // 默认 30 分钟
  *   gapJoinMs?: number,             // 默认 2 分钟
@@ -456,7 +456,7 @@ function absorbOrphanGroups(groups, opts = {}) {
  *   absorbOrphans?: boolean,        // 默认 true（仅对 >=3 场的连续对话生效）
  *   vectors?: Map<number, Float32Array>|Function|null, // 可选：启用阶段 B 语义精修
  * }} [opts]
- * @returns {{ scenes: object[], stats: object }}
+ * @returns {{ scenes: any[], stats: Record<string, any> }}
  */
 export function splitScenesWithStats(messages, opts = {}) {
   const gapCutMs = opts.gapCutMs ?? GAP_CUT_MS;
@@ -624,9 +624,9 @@ export function splitScenesWithStats(messages, opts = {}) {
 /**
  * 切分场景（只要结果）。等价于 `splitScenesWithStats(messages, opts).scenes`。
  *
- * @param {object[]} messages
- * @param {object} [opts] 见 splitScenesWithStats
- * @returns {object[]} `{ msgs, start_at, end_at, msg_count, ...派生标记 }[]`
+ * @param {any[]} messages
+ * @param {Record<string, any>} [opts] 见 splitScenesWithStats
+ * @returns {any[]} `{ msgs, start_at, end_at, msg_count, ...派生标记 }[]`
  */
 export function splitScenes(messages, opts = {}) {
   return splitScenesWithStats(messages, opts).scenes;
@@ -654,8 +654,8 @@ export function describe(values) {
  * 场景集合的整体分布（时长 / 条数 / 跨压缩点 / 含排除）。
  * 纯统计，不做任何解读。
  *
- * @param {object[]} scenes splitScenes 的返回值（带或不带邻接回填都行）
- * @returns {object}
+ * @param {any[]} scenes splitScenes 的返回值（带或不带邻接回填都行）
+ * @returns {Record<string, any>}
  */
 export function sceneStats(scenes) {
   const list = Array.isArray(scenes) ? scenes : [];

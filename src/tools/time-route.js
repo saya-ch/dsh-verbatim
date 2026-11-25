@@ -347,6 +347,7 @@ export function density(text) {
  * @param {{from?: number, to?: number}} [opts] 查询区间（用来判断「窄」）
  * @returns {{picks:{index:number,msg:object}[], truncated:boolean}}
  */
+/** @param {any[]} msgs @param {Record<string, any>} [opts] */
 export function pickExcerpt(msgs, opts = {}) {
   const n = Array.isArray(msgs) ? msgs.length : 0;
   if (n === 0) return { picks: [], truncated: false };
@@ -405,8 +406,8 @@ export function pickExcerpt(msgs, opts = {}) {
  * Agent 照做时区间就是那 14 分钟 —— 这种情况**必须全给**，否则「补查」形同虚设。
  * 实测：不放开时，补查 22 条省略消息只找回 3 条（14%）。
  *
- * @param {object[]} msgs
- * @param {{from?: number, to?: number}} opts
+ * @param {any[]} msgs
+ * @param {{from?: number, to?: number}} [opts]
  * @returns {boolean}
  */
 export function shouldShowAll(msgs, opts = {}) {
@@ -442,10 +443,10 @@ export function clampSceneLimit(limit) {
  * 最近一次聊天：从最近的时间窗往前试，直到捞到场景
  * （库里可能整段都是被排除的日子，所以窗口要能放宽）。
  *
- * @param {object} repo
+ * @param {any} repo
  * @param {number} now
  * @param {string|null} sessionId 只在这个会话里找（null = 单库模式，不过滤）
- * @returns {object[]} 按 startAt 升序，只含末尾一小段，交给上层逆序取
+ * @returns {any[]} 按 startAt 升序，只含末尾一小段，交给上层逆序取
  */
 function latestScenes(repo, now, sessionId = null) {
   for (const windowDays of [7, 30, 365, 3650]) {
@@ -464,11 +465,11 @@ function latestScenes(repo, now, sessionId = null) {
  * 模糊时段：「那阵子」按场景密度取前 N 场（§8.2），
  * 多取一倍候选，让"场景整段被排除"时还有后备。
  *
- * @param {object} repo
+ * @param {any} repo
  * @param {{from:number, to:number}} parsed
  * @param {number} limit
  * @param {string|null} sessionId 只在这个会话里找（null = 单库模式）
- * @returns {object[]} 按 startAt 升序
+ * @returns {any[]} 按 startAt 升序
  */
 function spanScenes(repo, parsed, limit, sessionId = null) {
   const scenes = repo.scenesByTimeRange(sessionId, parsed.from, parsed.to, FETCH_LIMIT);
@@ -491,11 +492,11 @@ function spanScenes(repo, parsed, limit, sessionId = null) {
  * 被整段排除的日子照样切出场景，但可见消息全被过滤 → 用 `scene.msgCount`
  * （含被排除的条数，D-195 落库字段）判「这场有没有内容」。
  *
- * @param {object} repo
- * @param {object[]} candidates 按想要的优先顺序
+ * @param {any} repo
+ * @param {any[]} candidates 按想要的优先顺序
  * @param {{includeExcluded:boolean}} opts
- * @returns {{visible:{scene:object, msgs:object[]}[],
- *            excluded:{scene:object, total:number}[]}}
+ * @returns {{visible:{scene:any, msgs:any[]}[],
+ *            excluded:{scene:any, total:number}[]}}
  */
 function classifyScenes(repo, candidates, { includeExcluded }) {
   const visible = [];
@@ -515,8 +516,8 @@ function classifyScenes(repo, candidates, { includeExcluded }) {
 
 /**
  * 渲染一场：头 + 摘录 + 排除/压缩标记 + 前一场尾巴。
- * @param {{scene:object, msgs:object[]}} block
- * @param {{now:number, includeExcluded:boolean, prevRange:object|null, leadIn:object[]}} opts
+ * @param {{scene:any, msgs:any[]}} block
+ * @param {{now:number, includeExcluded:boolean, prevRange:any, leadIn:any[], from?:number|null, to?:number|null, annotateMedia?: any}} opts
  * @returns {string}
  */
 function renderBlock(block, opts) {
@@ -587,10 +588,11 @@ function renderBlock(block, opts) {
  * 调用方负责解析依赖与统计；这里只管按时间窗把场次展开。
  *
  * @param {{
- *   repo: object, sessionId: string|null, now: number,
- *   stats: object,                 // 空结果时要报的库范围
+ *   repo: any, sessionId: string|null, now: number,
+ *   stats: any,                 // 空结果时要报的库范围
  *   window: {kind:string, from:number|null, to:number|null, label:string},
  *   limit: number, includeExcluded: boolean,
+ *   extras?: any, dshHome?: string|null,
  * }} input
  * @returns {string}
  */

@@ -46,7 +46,7 @@ function seqOf(m) {
  * 把一条消息压成 lead_in 用的最小原文对象。
  * 只留原文相关字段：谁、什么时候、说了什么，以及定位用的 seq。
  *
- * @param {object} m
+ * @param {any} m
  * @returns {{seq:number|null, at:number, speaker:string|null, text:string}}
  */
 export function leadInDigest(m) {
@@ -86,11 +86,11 @@ function boundsOf(s) {
  *   lead_in       前一场末尾 2 条原文的 JSON 字符串（第一场为 '[]'）
  *   lead_in_msgs  同上，数组形式
  *
- * @param {object[]} scenes splitScenes 的输出
+ * @param {any[]} scenes splitScenes 的输出
  * @param {{ ids?: number[], leadInCount?: number }} [opts]
  *   ids：真实库 id（T1 入库后拿着返回的 id 再来回填时用）；
  *       不传则沿用场景已有的 id，再没有就按 1..N 编号（纯函数可独立验证）。
- * @returns {object[]}
+ * @returns {any[]}
  */
 export function linkScenes(scenes, opts = {}) {
   if (!Array.isArray(scenes)) throw new TypeError('linkScenes: 入参必须是场景数组');
@@ -147,7 +147,7 @@ export function linkScenes(scenes, opts = {}) {
  * 所以用 [最小 seq, 最大 seq] 区间回填即可。区间取的是场景内**实际存在**的
  * 最小/最大 seq，rewind 掉的那些 seq 本来就没有行，BETWEEN 不会误伤。
  *
- * @param {object[]} scenes splitScenes / linkScenes 的输出
+ * @param {any[]} scenes splitScenes / linkScenes 的输出
  * @param {string} [sessionId] 不传则读场景里第一条消息的 session_id
  * @returns {{ sceneIndex:number, sceneId:number|null, sessionId:string|null,
  *             fromSeq:number, toSeq:number, msgCount:number }[]}

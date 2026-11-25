@@ -68,15 +68,15 @@ export {
  * 创建面板 RPC 的**业务层**（不依赖 HTTP，便于测试与复用）。
  *
  * @param {{
- *   handle: object, repo?: object, extras?: object,
+ *   handle: any, repo?: any, extras?: any,
  *   dbPath?: string, dshHome?: string, dbRoot?: string,
- *   config?: object, logger?: {info?(m:string):void, warn?(m:string):void},
- *   sessionLock?: object, recallLog?: object[],
- *   getHostLlm?: () => object|null, hostLlm?: object,
- *   syncSession?: (sessionId: string) => Promise<object>,
- * }} opts
+ *   config?: any, logger?: any,
+ *   sessionLock?: any, recallLog?: any[],
+ *   getHostLlm?: () => any, hostLlm?: any,
+ *   syncSession?: (sessionId: string) => Promise<any>,
+ * }} [opts]
  */
-export function createPanelApi(opts = {}) {
+export function createPanelApi(opts = /** @type {any} */ ({})) {
   const handle = opts.handle;
   if (!handle?.db) throw new TypeError('createPanelApi: 需要 openDb() 返回的 handle');
 
@@ -184,7 +184,7 @@ export function createPanelApi(opts = {}) {
   /**
    * E1：需要会话范围的方法必须带 sessionId，缺了报错 —— **绝不默认全库**。
    * @param {string} method
-   * @param {object} params
+   * @param {Record<string, any>} params
    * @returns {string}
    */
   function requireSession(method, params) {
@@ -303,7 +303,7 @@ export function createPanelApi(opts = {}) {
 
     const scenes = repo.scenesByTimeRange(sessionId, from, to, ALL_ROWS);
 
-    /** @type {Map<string, {date:string, msgCount:number, sceneCount:number, chars:number, scenes:object[]}>} */
+    /** @type {Map<string, {date:string, msgCount:number, sceneCount:number, pendingMsgs:number, chars:number, scenes:any[]}>} */
     const byDay = new Map();
     const ensure = (date) => {
       let d = byDay.get(date);
@@ -586,7 +586,7 @@ export function createPanelApi(opts = {}) {
 
     let cfg;
     try {
-      cfg = setSessionFlag(sessionId, key, value, { dbRoot });
+      cfg = setSessionFlag(sessionId, /** @type {'record'|'tools'|'autoRecall'} */ (key), value, { dbRoot });
     } catch (error) {
       throw new PanelError('CONFIG_WRITE_FAILED', `开关没保存上：${error?.message ?? error}`, 500);
     }

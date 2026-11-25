@@ -173,7 +173,7 @@ function adaptStore(opts) {
 /**
  * 会话 id 从哪来：显式传 > 日志头 > 目录名（`.../<session-id>/session.v4.jsonl.zstd`）。
  * @param {string} sessionFile
- * @param {object|null} header
+ * @param {any} header
  * @param {string} [override]
  * @returns {string}
  */
@@ -485,8 +485,8 @@ export async function importSession(sessionFile, dbPathOrOpts, maybeOpts) {
 
 /**
  * 把各步统计拼成一份可打印的报告（验收拿它对基线数字）。
- * @param {{sessionId: string, reader: object, exportStats: object,
- *          sceneReport: object, stats: object}} p
+ * @param {{sessionId: string, reader: any, exportStats: any,
+ *          sceneReport: any, stats: any}} p
  */
 export function buildReport(p) {
   const exp = p.exportStats ?? {};
@@ -542,20 +542,23 @@ export function printImportReport(report, opts = {}) {
  * 每一项都可单独关掉；没有 provider 的步骤**显式说清为什么跳过**，
  * 不静默消失（否则验收时会以为跑过了）。
  *
- * @param {object} [opts]
- * @param {object} [opts.handle] openPipelineDb() 的返回值（给了就用它的连接）
- * @param {string} [opts.dbPath]
- * @param {string} [opts.sessionId] 只重建某个会话（不给 = 全库）
- * @param {object} [opts.llm] T5 的 LlmProvider（gist / beat 用）
- * @param {object} [opts.embedding] T5 的 EmbeddingProvider（向量用）
- * @param {boolean} [opts.gist] 默认「有 llm 就做」
- * @param {boolean} [opts.beats] 默认 false（每条一次模型调用，很贵）
- * @param {boolean} [opts.vectors] 默认「有 embedding 就做」
- * @param {boolean} [opts.force] 向量换模型时强制重建
- * @param {number} [opts.beatLimit] beat 最多分多少条（默认 50）
- * @param {boolean} [opts.quiet]
- * @param {(line: string) => void} [opts.log]
- * @returns {Promise<object>}
+ * @param {{
+ *   handle?: any,
+ *   dbPath?: string,
+ *   sessionId?: string,
+ *   llm?: any,
+ *   embedding?: any,
+ *   gist?: boolean,
+ *   beats?: boolean,
+ *   vectors?: boolean,
+ *   force?: boolean,
+ *   beatLimit?: number,
+ *   quiet?: boolean,
+ *   log?: (line: string) => void,
+ *   progress?: any,
+ *   onProgress?: (info: any) => void,
+ * }} [opts]
+ * @returns {Promise<any>}
  */
 export async function rebuildDerived(opts = {}) {
   const quiet = opts.quiet === true;
@@ -698,10 +701,10 @@ export async function rebuildDerived(opts = {}) {
  * 有哪些会话。这里读一条只读聚合 SQL（不改任何数据），仍然不碰业务表逻辑。
  * 只给编排层用；各模块内部依旧一律不写 SQL。
  *
- * @param {{db: object}} opts
+ * @param {{db: any}} [opts]
  * @returns {string[]}
  */
-export function listSessionIds({ db } = {}) {
+export function listSessionIds({ db } = /** @type {any} */ ({})) {
   if (!db || typeof db.prepare !== 'function') return [];
   return db
     .prepare('SELECT DISTINCT session_id AS sid FROM msg ORDER BY sid')

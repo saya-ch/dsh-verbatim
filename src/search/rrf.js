@@ -195,14 +195,14 @@ export async function searchWithRRF(routes = {}, opts = {}) {
   // 失败的那一路就走降级说明，绝不能把「关键词 0 命中 + 向量路出错」误报成「记忆库打不开」。
   if (attempted.length > 0 && errors.length >= attempted.length) {
     const first = errors[0];
-    const error = new Error(`三路检索全部失败：${first.error?.message ?? first.error}`);
+    const error = /** @type {Error & { errors?: any[] }} */ (new Error(`三路检索全部失败：${first.error?.message ?? first.error}`));
     error.errors = errors;
     throw error;
   }
 
   const fused = fuseRRF(
     ROUTES.map((name) => ({ name, hits: hits[name], weight: opts.weights?.[name] })),
-    { k: opts.k, limit: opts.limit, keyOf: opts.keyOf },
+    { k: opts.k, limit: opts.limit, keyOf: /** @type {((hit: object) => any) | undefined} */ (opts.keyOf) },
   );
 
   return {
@@ -239,11 +239,11 @@ function routeLabel(name) {
  * 库里的向量是别的模型算的就直接报，不拿两套不可比的向量硬算。
  *
  * @param {{
- *   repo: object, extras: object, store: object, provider: object,
+ *   repo: any, extras: any, store: any, provider: any,
  *   logger?: {warn(msg: string): void},
- * }} opts
+ * }} [opts]
  */
-export function createSearcher(opts = {}) {
+export function createSearcher(opts = /** @type {any} */ ({})) {
   const { repo, extras, store, provider } = opts;
   if (!repo) throw new TypeError('createSearcher: 需要 repo');
   if (!extras?.search?.keyword) throw new TypeError('createSearcher: 需要 extras.search.keyword');
@@ -254,7 +254,7 @@ export function createSearcher(opts = {}) {
    * 检索消息（三路融合）。
    *
    * @param {{
-   *   query: string,                       // 用户原话
+   *   query?: string,                      // 用户原话
    *   sessionId?: string|null,
    *   from?: number, to?: number,          // 时间窗（毫秒，左闭右开）
    *   limit?: number,                      // 最终返回条数，默认 20
@@ -264,10 +264,10 @@ export function createSearcher(opts = {}) {
    *   timeSceneLimit?: number,             // 时间路展开几场，默认 3
    *   timeMsgLimit?: number,               // 时间路总共展开几条消息，默认 12
    *   signal?: AbortSignal,
-   *   onDegrade?: Function,
+   *   onDegrade?: (info: { route: string; error?: Error; reason?: string; }) => void,
    *   onDecision?: Function,
-   * }} args
-   * @returns {Promise<{hits: object[], meta: object}>}
+   * }} [args]
+   * @returns {Promise<{hits: any[], meta: any}>}
    */
   async function searchMsgs(args = {}) {
     const query = String(args.query ?? '').trim();
@@ -326,9 +326,9 @@ export function createSearcher(opts = {}) {
  * 之所以先取场景再展开消息，而不是直接 msgsByTimeRange：TA要找的是「那一场」，
  * 一场里的每条消息都该算一次命中，而且要有场景区间（验收 2：每条结果都带时间区间）。
  *
- * @param {object} repo
+ * @param {any} repo
  * @param {{sessionId?: string|null, from?: number, to?: number,
- *          timeSceneLimit?: number, timeMsgLimit?: number}} args
+ *          timeSceneLimit?: number, timeMsgLimit?: number}} [args]
  * @returns {Function|null} 没有时间窗就返回 null（= 这次不跑时间路）
  */
 export function buildTimeRoute(repo, args = {}) {

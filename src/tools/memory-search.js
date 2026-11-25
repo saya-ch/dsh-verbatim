@@ -260,9 +260,9 @@ export function createSearchTool(deps = {}) {
           if (!wantNote) return timeText;
 
           const notes = selectNotes({ extras, sessionId, window, query: '', limit });
-          if (!wantMsg) return renderNotesOnly(notes, { stats, window, limit, extras, sessionId });
+          if (!wantMsg) return renderNotesOnly(notes, { stats, window, limit, extras, sessionId, aboutLabels: deps.aboutLabels ?? null });
           if (notes.length === 0) return timeText;
-          return `${timeText}\n\n${renderNotesOnly(notes, { stats, window, limit, extras, sessionId })}`;
+          return `${timeText}\n\n${renderNotesOnly(notes, { stats, window, limit, extras, sessionId, aboutLabels: deps.aboutLabels ?? null })}`;
         }
 
         /* -------------------- ③ 有 query：关键词 + 语义 -------------------- */

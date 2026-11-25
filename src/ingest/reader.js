@@ -92,7 +92,7 @@ export function decompressFrames(buf) {
  * 坏行不抛错，计数后跳过——日志是追加写的，末尾可能被截断。
  *
  * @param {string} text
- * @returns {{ events: object[], badLines: number }}
+ * @returns {{ events: any[], badLines: number }}
  */
 export function parseJsonLines(text) {
   const events = [];
@@ -112,8 +112,8 @@ export function parseJsonLines(text) {
 /**
  * 按 seq 升序排序；同一 seq 只保留第一次出现的（重复视为追加写重放）。
  *
- * @param {object[]} events
- * @returns {{ events: object[], duplicates: number, noSeq: object[] }}
+ * @param {any[]} events
+ * @returns {{ events: any[], duplicates: number, noSeq: any[] }}
  */
 export function sortAndDedupeBySeq(events) {
   const noSeq = [];
@@ -143,8 +143,8 @@ export function sortAndDedupeBySeq(events) {
  *
  * @param {string} filePath  session.v4.jsonl.zstd 的路径
  * @returns {{
- *   header: object|null,           // type === 'session' 的头事件（没有 seq）
- *   events: object[],              // 按 seq 升序的全部事件
+ *   header: any,           // type === 'session' 的头事件（没有 seq）
+ *   events: any[],              // 按 seq 升序的全部事件
  *   stats: {
  *     filePath: string, bytes: number, compressed: boolean,
  *     frames: number, framesOk: number, framesFailed: number, framesMerged: number,
@@ -217,16 +217,8 @@ export function readSessionFile(filePath) {
  * 遇到文件缩小、截断、坏帧或非 zstd 帧边界时自动回退到全量 `readSessionFile`，保证结果与全量一致。
  *
  * @param {string} filePath
- * @param {object|null} [prevState]
- * @returns {{
- *   header: object|null,
- *   events: object[],
- *   tailEvents: object[],
- *   incremental: 'full' | 'hit' | 'tail',
- *   prevSeqMax: number|null,
- *   state: object,
- *   stats: object,
- * }}
+ * @param {any} [prevState]
+ * @returns {Record<string, any>}
  */
 export function readSessionFileIncremental(filePath, prevState = null) {
   const abs = path.resolve(filePath);

@@ -31,7 +31,7 @@ import { normalizeSessionId } from './scope.js';
 
 /**
  * 全部可用工具（按固定顺序，保证每次生成的 schema 顺序一致，缓存/对比都稳定）。
- * @type {Array<{
+ * @type {ReadonlyArray<{
  *   name: string, kind: 'read'|'write', switchKeys: string[], factory: Function,
  *   since: string, note: string,
  * }>}
@@ -127,8 +127,8 @@ export function createToolRegistry(opts = {}) {
  * （见 createSessionToolSet）。不传 = 单库模式（MCP 单会话 / 验收脚本 / 老测试），
  * 检索不过滤 —— 那是历史行为，不是"自动知道当前会话"。
  *
- * @param {object} [opts] 同 createToolRegistry，另支持 `sessionId` / `logger`
- * @returns {{tools: object[], plan: object, sessionId: string|null, close: () => void}}
+ * @param {Record<string, any>} [opts] 同 createToolRegistry，另支持 `sessionId` / `logger`
+ * @returns {{tools: any[], plan: object, sessionId: string|null, close: () => void}}
  */
 export function createToolSet(opts = {}) {
   const config = opts.config ?? defaultSessionConfig();
@@ -137,7 +137,7 @@ export function createToolSet(opts = {}) {
 
   // 依赖注入：各工具的工厂自己解析（handle > repo/extras > dbPath > 默认库单例）
   const deps = {};
-  for (const key of ['handle', 'repo', 'extras', 'dbPath', 'now']) {
+  for (const key of ['handle', 'repo', 'extras', 'dbPath', 'now', 'speakerLabels', 'aboutLabels']) {
     if (opts[key] !== undefined) deps[key] = opts[key];
   }
   // sessionId 走单独一条：非法值（空串/非字符串）不能变成"绑定了一个空会话"
@@ -201,20 +201,12 @@ export function createToolSet(opts = {}) {
  * 连接复用：同一个 `dbPath` 只开一条连接（按引用计数关闭），传 `handle` 时
  * 完全不新开连接 —— 宿主应该把启动时那条 handle 传进来。
  *
- * @param {{
- *   sessionId: string,                 // 必填
- *   handle?: object, repo?: object, extras?: object, dbPath?: string,
- *   config?: object,                   // 不给就按会话配置读（A3）
- *   dbRoot?: string,                   // 会话配置目录的父目录（$DSH_HOME/verbatim）
- *   dshHome?: string,                  // 或者给 $DSH_HOME（配置在 <dshHome>/verbatim/sessions/）
- *   now?: number|(() => number), guard?: boolean,
- *   loadVec?: boolean, logger?: { warn(msg: string): void },
- * }} opts
- * @returns {{tools: object[], plan: object, sessionId: string, config: object,
+ * @param {Record<string, any>} opts
+ * @returns {{tools: any[], plan: object, sessionId: string, config: object,
  *            close: () => void}}
  * @throws {TypeError} 没给 sessionId（这是防"忘绑会话"的硬闸门）
  */
-export function createSessionToolSet(opts = {}) {
+export function createSessionToolSet(opts = /** @type {any} */ ({})) {
   const sessionId = normalizeSessionId(opts.sessionId);
   if (!sessionId) {
     throw new TypeError(

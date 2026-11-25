@@ -67,6 +67,20 @@ if (enPart && zhPart) {
   }
 }
 
+// 校验模块工厂顶层（4 空格缩进）是否存在跨分片重名声明，防止裸拼接污染冲突
+const seenTopDecls = new Map();
+for (const f of parts) {
+  const code = fs.readFileSync(path.join(PARTS_DIR, f), 'utf8');
+  for (const m of code.matchAll(/^ {4}(?:function|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/gm)) {
+    const name = m[1];
+    if (seenTopDecls.has(name)) {
+      console.error(`[build-client] 顶层作用域重名声明 "${name}": ${seenTopDecls.get(name)} 与 ${f}`);
+      process.exit(1);
+    }
+    seenTopDecls.set(name, f);
+  }
+}
+
 if (process.argv.includes('--check')) {
   const current = fs.existsSync(OUT_FILE) ? fs.readFileSync(OUT_FILE, 'utf8') : '';
   if (current !== built) {

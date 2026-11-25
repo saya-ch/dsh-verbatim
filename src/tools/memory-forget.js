@@ -131,10 +131,10 @@ function noteInventory(extras, sessionId = null) {
  * 必须自己过一道会话 —— 否则 A 会话给一个 B 会话的编号，就能从回答里
  * 确认「B 那边有这么一句话」并读回它的原文（A1：会话之间不该互相看见）。
  *
- * @param {object} repo
+ * @param {any} repo
  * @param {number} msgId
  * @param {string|null} sessionId null = 单库模式（不过滤）
- * @returns {object|null}
+ * @returns {any}
  */
 function msgInSession(repo, msgId, sessionId = null) {
   const rows = safeCall(() => repo.msgsByIds([msgId]), []);
@@ -152,7 +152,7 @@ function msgLine(msg) {
  * 忘掉一条笔记 / 从回收站恢复（memory_forget 的核心逻辑）。
  *
  * @param {{id?: number|string, reason?: string, restore?: boolean}} [args]
- * @param {object} [ctx] 见 memory-remember.js 的 resolveStore；另支持 `ctx.now`
+ * @param {Record<string, any>} [ctx] 见 memory-remember.js 的 resolveStore；另支持 `ctx.now`
  * @returns {Promise<{ok: boolean, action: string, id: number|null, text: string}>}
  */
 export async function forgetNote(args = {}, ctx = {}) {
@@ -290,7 +290,7 @@ export async function forgetNote(args = {}, ctx = {}) {
         '',
         `「${note.content}」`,
         '',
-        `记于 ${formatWhen(note.at, now)}${aboutSuffix(note.about)}`,
+        `记于 ${formatWhen(note.at, now)}${aboutSuffix(note.about, ctx?.aboutLabels ?? null)}`,
       ].join('\n'),
     };
   }
@@ -359,7 +359,7 @@ export async function forgetNote(args = {}, ctx = {}) {
       '',
       `「${excerpt(note.content, 80)}」`,
       '',
-      `记于 ${formatWhen(note.at, now)}${aboutSuffix(note.about)}`,
+      `记于 ${formatWhen(note.at, now)}${aboutSuffix(note.about, ctx?.aboutLabels ?? null)}`,
       reason ? `删除原因已记进审计：${reason}` : '',
       purged > 0 ? `（顺手清掉了 ${purged} 条超过 30 天的旧笔记）` : '',
       collision
@@ -374,13 +374,13 @@ export async function forgetNote(args = {}, ctx = {}) {
 
 /** about 值 → 文案里的说法；没标就返回 null（不硬凑一句「关于没标」）。
  *  枚举与标签统一从 format.js 取，别在这里再写一份（漂移会让同一条笔记有两种人称）。 */
-function aboutWord(about) {
-  return noteAboutWord(about);
+function aboutWord(about, aboutLabels = null) {
+  return noteAboutWord(about, aboutLabels);
 }
 
 /** ` · 关于他`，没标 about 时返回空串 */
-function aboutSuffix(about) {
-  const word = aboutWord(about);
+function aboutSuffix(about, aboutLabels = null) {
+  const word = aboutWord(about, aboutLabels);
   return word ? ` · 关于${word}` : '';
 }
 
@@ -397,7 +397,7 @@ function safeCall(fn, fallback) {
  * 拒绝删除 msg 的文案（D-167：标记 + 查 + 重建，不是删）。
  * 这是整个工具最重要的一段话——必须让TA明白"为什么不能删"，否则TA会反复试。
  *
- * @param {object|null} msg 命中的消息行（可能有）
+ * @param {any} msg 命中的消息行（可能有）
  * @param {{kind: string, id: number}} ref
  * @param {number} now
  */
@@ -483,7 +483,7 @@ export const memoryForgetTool = createForgetTool();
  * 也会顺手扫一遍（best-effort）。不清理也不影响"已删的看不到"，
  * 只是那些行会一直占着库——所以必须有个显式入口。
  *
- * @param {object} [ctx] 见 resolveStore
+ * @param {Record<string, any>} [ctx] 见 resolveStore
  * @param {{now?: number, retentionMs?: number}} [opts]
  * @returns {number} 清理条数
  */

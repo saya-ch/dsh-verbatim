@@ -62,6 +62,7 @@ export function openMemory(opts = {}) {
  *          prefix?: string}} args
  * @returns {{msgs: object[], vectors: Map<number, Float32Array>}}
  */
+/** @param {{ repo: any, count: number, sessionId?: string, startAt?: number, stepMs?: number, prefix?: string }} opts */
 export function seedMsgs({ repo, count, sessionId = 's-test', startAt = 1_760_000_000_000, stepMs = 60_000, prefix = '第' }) {
   const rows = [];
   for (let i = 0; i < count; i++) {

@@ -57,9 +57,9 @@ export const DROP_REASONS = Object.freeze({
  *   ④ key 长度 ≤ 20 字
  *   ⑤ value 长度 ≤ 80 字
  *
- * @param {object} raw 模型给出的原始条目
+ * @param {any} raw 模型给出的原始条目
  * @param {object} deps
- * @param {(seq:number) => (object|null)} deps.lookupMsg 按 seq 查 msg，返回 null 表示不存在
+ * @param {(seq:number) => (any|null)} deps.lookupMsg 按 seq 查 msg，返回 null 表示不存在
  * @param {(reason:string, detail:object) => void} [deps.onDrop] 丢弃回调，便于统计
  * @returns {{subject:string,key:string,value:string,sourceSeq:number,origin:string}|null}
  */
@@ -156,7 +156,7 @@ export async function extractFacts(opts) {
 
   // 只送 user 侧、且在 surface 里的消息（D-069 + 校验③）
   const candidates = msgs.filter(
-    (m) => m.speaker === 'user' && (m.inSurface ?? m.in_surface ?? 1) === 1,
+    (/** @type {any} */ m) => m.speaker === 'user' && (m.inSurface ?? m.in_surface ?? 1) === 1,
   );
 
   // 一条 user 消息都没有 → 不可能有事实，直接返回，不烧一次调用
@@ -236,9 +236,9 @@ export async function extractFacts(opts) {
  * 把一批 fact 按 subject+key 合并，同 key 用新的 value 覆盖旧的。
  * 上层 upsert 前可用；不碰数据库，纯函数。
  *
- * @param {object[]} oldFacts
- * @param {object[]} newFacts
- * @returns {object[]}
+ * @param {any[]} oldFacts
+ * @param {any[]} newFacts
+ * @returns {any[]}
  */
 export function mergeFacts(oldFacts, newFacts) {
   const map = new Map();

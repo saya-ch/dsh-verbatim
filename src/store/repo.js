@@ -103,7 +103,7 @@ function required(row, names, method) {
  * 「先没有、后才有」，缓存一个 false 会让后面所有清理静默跳过。
  * 只有删除路径会调它，一次 sqlite_master 查询的成本可以忽略。
  *
- * @param {object} db
+ * @param {any} db
  * @param {string} name
  */
 function tableExists(db, name) {
@@ -127,7 +127,7 @@ function tableExists(db, name) {
  *
  * 永不抛：清理失败不该让 rewind / 场景重建本身失败。
  *
- * @param {object} db
+ * @param {any} db
  * @param {'msg'|'scene'} kind
  * @param {number[]} ids
  * @returns {number} 实际删掉的向量行数（两张表加起来）
@@ -370,8 +370,7 @@ export function createRepo(handle) {
    * 只删原文不清向量的话，向量路会把已撤回的话召回给一条新消息（R5 实测 P1）。
    * beat / media 靠 ON DELETE CASCADE 跟着走。
    *
-   * @param {string} sessionId
-   * @param {number} fromSeq 包含该 seq
+   * (sessionId, fromSeq)
    * @returns {number} 实际删除的消息条数
    */
   function runWithFtsHeal(fn) {

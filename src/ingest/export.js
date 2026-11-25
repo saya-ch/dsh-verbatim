@@ -150,8 +150,8 @@ export function normalizeExcludeRanges(ranges, opts = {}) {
  * 判断一个时刻是否落在软排除区间里。
  *
  * @param {number} at epoch ms
- * @param {{from:number,to:number}[]} ranges 已归一化的区间
- * @returns {{from:number,to:number,reason:string|null}|null} 命中返回该区间，否则 null
+ * @param {{from:number,to:number,reason?:string|null}[]} ranges 已归一化的区间
+ * @returns {{from:number,to:number,reason?:string|null}|null} 命中返回该区间，否则 null
  */
 export function matchExcludeRange(at, ranges) {
   if (typeof at !== 'number' || !Number.isFinite(at)) return null;
@@ -183,8 +183,8 @@ export function dayKeyInZone(at, offset = DEFAULT_UTC_OFFSET) {
  * 取事件的内容块数组。
  * 实测两种位置：user/message 在 data.content，assistant/message 在 data.message.content。
  *
- * @param {object} ev
- * @returns {object[]}
+ * @param {any} ev
+ * @returns {any[]}
  */
 export function contentBlocksOf(ev) {
   const c = ev?.data?.message?.content ?? ev?.data?.content;
@@ -195,7 +195,7 @@ export function contentBlocksOf(ev) {
  * 只取 text 块并拼接（D-005：排除 reasoning / tool-call / tool-result / image）。
  * 原文一字不改，不 trim 中间内容。
  *
- * @param {object} ev
+ * @param {any} ev
  * @returns {string}
  */
 export function textBlocksOf(ev) {
@@ -209,7 +209,7 @@ export function textBlocksOf(ev) {
  * 抽取事件里的图片/文件媒体块（D-005：只记位置/元信息，不把 base64 塞进库）。
  * 兼容 DSH / Anthropic / OpenAI 常见内容块形态。
  *
- * @param {object} ev
+ * @param {any} ev
  * @returns {{path: string, sha256: string|null, width: number|null, height: number|null}[]}
  */
 export function mediaBlocksOf(ev) {
@@ -464,7 +464,7 @@ export function stripBridgeMetadata(text) {
  * 同时和 `command/done` 的文案「已撤回 seq N 及之后内容」交叉验证过，
  * 153/153 完全一致。
  *
- * @param {object} ev
+ * @param {any} ev
  * @returns {{ start: number, end: number, via: string }|null}
  */
 export function rewindRangeOf(ev) {
@@ -491,7 +491,7 @@ export function rewindRangeOf(ev) {
 /**
  * 判断一条 user/message 是不是 rewind 标记。
  *
- * @param {object} ev
+ * @param {any} ev
  * @returns {boolean}
  */
 export function isRewindEvent(ev) {
@@ -502,7 +502,7 @@ export function isRewindEvent(ev) {
  * 从 `command/done` 的中文文案里兜底解析撤回目标。
  * 只在找不到 dsh-rewind 事件时使用（文案随语言变，不能当主路径）。
  *
- * @param {object} ev
+ * @param {any} ev
  * @returns {number|null}
  */
 export function parseRewindFromCommandDone(ev) {
@@ -516,7 +516,7 @@ export function parseRewindFromCommandDone(ev) {
 /**
  * 核心导出：从按 seq 升序的事件数组里重建可见消息。
  *
- * @param {object[]} events  按 seq 升序的事件数组
+ * @param {any[]} events  按 seq 升序的事件数组
  * @param {{
  *   sessionId?: string,
  *   includeRewound?: boolean,
@@ -530,9 +530,10 @@ export function parseRewindFromCommandDone(ev) {
  *   只打 `excluded=1` 标记，检索时过滤掉。**不丢弃**。
  *   cleanMetadata=false 可关掉桥接元数据清洗（默认开），只用于对比排查。
  * @returns {{
- *   messages: object[],       // 要入库的：{ session_id, seq, at, speaker, text, in_surface, compacted_at, excluded }
- *   rewound: object[],        // 被 rewind 掉的（仅审计）
- *   stats: object
+ *   messages: any[],       // 要入库的：{ session_id, seq, at, speaker, text, in_surface, compacted_at, excluded }
+ *   rewound: any[],        // 被 rewind 掉的（仅审计）
+ *   media?: any[],
+ *   stats: Record<string, any>
  * }}
  */
 export function exportMessages(events, opts = {}) {
@@ -545,9 +546,9 @@ export function exportMessages(events, opts = {}) {
     onWarn: opts.onWarn,
   });
 
-  /** @type {object[]} 存活消息，按 seq 升序 */
+  /** @type {any[]} 存活消息，按 seq 升序 */
   const visible = [];
-  /** @type {object[]} 被 rewind 掉的，仅审计 */
+  /** @type {any[]} 被 rewind 掉的，仅审计 */
   const rewound = [];
 
   /** seq -> 该次压缩的时间戳 */
@@ -612,7 +613,7 @@ export function exportMessages(events, opts = {}) {
    * 因为后面可能还有 rewind 把这些消息删掉，中途累加会让分母虚高。
    *
    * @param {string} text
-   * @returns {{ text: string, clean: object, charsBefore: number }}
+   * @returns {{ text: string, clean: any, charsBefore: number }}
    */
   function applyBridgeClean(text) {
     const r = cleanBridgeMetadata(text);

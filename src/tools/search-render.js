@@ -378,10 +378,10 @@ function renderHit(row, opts) {
   return lines.join('\n');
 }
 
-export function renderNote(note) {
+export function renderNote(note, opts = {}) {
   const lines = [`  ${fmtStamp(note.at)}  笔记 #${note.id}`];
   lines.push(indentText(clipText(note.content), '    '));
-  const label = noteAboutLabel(note.about);
+  const label = noteAboutLabel(note.about, opts?.aboutLabels ?? null);
   if (label) lines.push(`    （${label}）`);
   return lines.join('\n');
 }
@@ -436,7 +436,7 @@ export function formatTrashHint(extras, sessionId) {
   }
 }
 
-export function renderNotesOnly(notes, { stats, window, limit, extras = null, sessionId = null }) {
+export function renderNotesOnly(notes, { stats, window, limit, extras = null, sessionId = null, aboutLabels = null }) {
   const shown = [...notes]
     .sort((a, b) => b.at - a.at || b.id - a.id)
     .slice(0, limit)
@@ -458,7 +458,7 @@ export function renderNotesOnly(notes, { stats, window, limit, extras = null, se
   const out = [
     `你自己记的 — ${fmtCount(notes.length)} 条${rangeHint}`,
     '',
-    shown.map(renderNote).join('\n\n'),
+    shown.map((n) => renderNote(n, { aboutLabels })).join('\n\n'),
     '',
     `已显示 ${fmtCount(shown.length)} / ${fmtCount(notes.length)} 条笔记。`,
   ];

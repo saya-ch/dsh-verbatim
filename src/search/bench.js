@@ -126,7 +126,7 @@ try {
   const insertMs = performance.now() - t0;
 
   /* ② 索引构建：mock embedding + 分批写 vec_msg（和 indexer 同一套路径） */
-  const provider = mockEmbedding(DIM, { maxBatch: BATCH });
+  const provider = /** @type {any} */ (mockEmbedding(DIM, { maxBatch: BATCH }));
   const store = createVectorStore(handle, { dim: DIM, logger: silent });
   const indexer = createIndexer({ handle, provider, extras, store, logger: silent });
 
@@ -167,6 +167,7 @@ try {
   let sanityHit = 0;
   for (let i = 0; i < QUERIES; i++) {
     const t = performance.now();
+    /** @type {any[]} */
     const hits = store.knnMsg(qv[i], K);
     knnSamples.push(performance.now() - t);
     if (hits[0]?.id === ids[queryIdx[i]]) sanityHit += 1; // 自己查自己应当第一
@@ -216,8 +217,9 @@ try {
     fallback.candidates('msg', qv[i], K);
     bareBruteSamples.push(performance.now() - t2);
 
+    /** @type {any[]} */
     const viaVec0 = store.knnMsg(qv[i], K);
-    if (JSON.stringify(hits.map((h) => h.id)) === JSON.stringify(viaVec0.map((h) => h.id))) sameIds += 1;
+    if (JSON.stringify(/** @type {any[]} */ (hits).map((h) => h.id)) === JSON.stringify(viaVec0.map((h) => h.id))) sameIds += 1;
   }
 
   /* ⑥ 报告 */
