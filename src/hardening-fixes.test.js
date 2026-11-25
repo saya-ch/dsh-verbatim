@@ -250,7 +250,7 @@ test('createPanelHandler：校验 Origin / sec-fetch-site 防跨站请求，放�
 });
 
 test('fact 表 v16 迁移与 session_id 隔离：不同会话同名 key 互不覆盖、互不可见', () => {
-  assert.equal(SCHEMA_VERSION, 16);
+  assert.ok(SCHEMA_VERSION >= 16);
   const handle = openDb({ dbPath: ':memory:', loadVec: false });
   try {
     const repo = createRepo(handle);

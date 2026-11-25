@@ -291,8 +291,8 @@ test('v4 老库升级到 v5：数据一条不丢，FTS 还能查，id 从此不�
     // v8 起多了 chunk 表（长文本分片，D-247）；v9 把存量超长消息重新排队索引；
     // v10 把 note.about 翻成 Agent 视角；v11 加 scene.gist_source；v12 加 scene.locked 与 media.caption；
     // v13 加 window / vec_window；v14 删掉 window_fts（trigram 对 2 字中文词无效，见 schema.sql）
-    // v15 加 window.kind；v16 为 fact 表补 session_id 会话隔离列
-    assert.equal(SCHEMA_VERSION, 16);
+    // v15 加 window.kind；v16 为 fact 表补 session_id 会话隔离列；v17 新增 msg_cjk2_fts
+    assert.equal(SCHEMA_VERSION, 17);
 
     // 结构变了
     const ddl = handle.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'msg'").get().sql;

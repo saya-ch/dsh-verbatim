@@ -343,3 +343,33 @@ test('分数换算：L2 距离 ↔ 余弦在单位向量下互换', () => {
     assert.ok(Math.abs(distanceToScore(d) - cos) < 1e-9, `cos=${cos} 换算应还原`);
   }
 });
+
+test('降级模式超过 maxFallbackVectors 时触发 LRU 淘汰并从 SQLite 流式补读', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verbatim-lru-'));
+  const dbPath = join(dir, 'lru.db');
+  try {
+    const first = openDb({ dbPath, loadVec: false, logger: silent });
+    const r = createRepo(first.db);
+    const vecs = [];
+    for (let i = 1; i <= 12; i += 1) {
+      const sid = i <= 6 ? 's1' : 's2';
+      const id = r.insertMsg({ sessionId: sid, seq: i, at: 1_760_000_000_000 + i * 1000, speaker: 'user', text: `消息 ${i}` });
+      vecs.push([id, textToVector(`内容 ${i}`, DIM)]);
+    }
+    const store1 = createVectorStore(first, { dim: DIM, maxFallbackVectors: 5, logger: silent });
+    store1.upsertMsgVecs(vecs);
+    assert.equal(store1.countMsgVec(), 12);
+    first.close();
+
+    // 重开后表内 12 条 > maxFallbackVectors(5)，仅热缓存最新 5 条，仍能召回早期 s1 向量
+    const second = openDb({ dbPath, loadVec: false, logger: silent });
+    const store2 = createVectorStore(second, { dim: DIM, maxFallbackVectors: 5, logger: silent });
+    assert.equal(store2.countMsgVec(), 12);
+    const targetVec = vecs[0][1];
+    const hits = store2.knnMsg(targetVec, 3, { sessionId: 's1' });
+    assert.equal(hits[0].id, vecs[0][0]);
+    second.close();
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});

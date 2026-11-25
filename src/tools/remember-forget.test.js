@@ -440,3 +440,22 @@ test('30 天：forget 时顺手扫掉过期回收站，并且只清过期的', a
     close();
   }
 });
+
+test('aboutLabels：支持自定义 me/him/us 称呼标签', async () => {
+  const { ctx, close } = freshCtx();
+  const customCtx = {
+    ...ctx,
+    aboutLabels: { me: '关于助手', him: '关于她', us: '关于双方' },
+  };
+  try {
+    const rem = await rememberNote({ content: '她喜欢喝冰美式。', about: 'him' }, customCtx);
+    assert.equal(rem.ok, true);
+    assert.match(rem.text, /关于她/);
+
+    const fgt = await forgetNote({ id: rem.id }, customCtx);
+    assert.equal(fgt.ok, true);
+    assert.match(fgt.text, /· 关于她/);
+  } finally {
+    close();
+  }
+});

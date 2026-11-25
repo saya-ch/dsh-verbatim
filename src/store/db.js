@@ -294,7 +294,7 @@ export function recreateVecTables(db, dim, opts = {}) {
  *     会出现在 B 会话的检索结果里，甚至能被 B 会话的 memory_forget 删掉。
  * v10：note.about 从用户视角（me/her/us）修正为 Agent 第一人称视角（me/him/us）。
  */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /** 连接级调优（D-199 / D-198）：每次 openDb 都要重设，pragma 不落库 */
 export const TUNING = Object.freeze({
@@ -545,6 +545,10 @@ const MIGRATIONS = [
   },
   // v16 → v17：新增 2-gram 中文短词辅助 FTS5 索引并回填存量消息
   (db) => {
+    const hasMsg = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'msg'")
+      .get();
+    if (!hasMsg) return;
     const exists = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'msg_cjk2_fts'")
       .get();

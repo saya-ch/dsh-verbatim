@@ -1040,4 +1040,42 @@ test('sqlite-vec：vec 表能建、BigInt 主键能插、KNN 能查、物理删�
   }
 });
 
+test('msg_cjk2_fts：2 字中文短词写入同步、删除同步，且老库迁移自动回填', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verbatim-cjk2-'));
+  const dbPath = join(dir, 'cjk2.db');
+  try {
+    const h1 = openDb({ dbPath, loadVec: false });
+    const r = createRepo(h1.db);
+    const e = createExtras(h1.db);
+    const id1 = r.insertMsg({ sessionId: 's1', seq: 1, at: 1_760_000_000_000, speaker: 'user', text: '帮我把那个歌单发一下' });
+    r.insertMsg({ sessionId: 's1', seq: 2, at: 1_760_000_060_000, speaker: 'assistant', text: '好的，今天天气不错' });
+
+    const hits = e.search.keyword('歌单', { sessionId: 's1' });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].id, id1);
+    assert.equal(e.search.countKeyword('歌单', { sessionId: 's1' }), 1);
+
+    // 模拟老库：删掉 msg_cjk2_fts 后降版本再重开，应自动建表并回填存量消息
+    h1.db.exec('DROP TABLE msg_cjk2_fts; DROP TRIGGER IF EXISTS msg_ad_cjk2; PRAGMA user_version = 16;');
+    h1.close();
+
+    const h2 = openDb({ dbPath, loadVec: false });
+    try {
+      const r2 = createRepo(h2.db);
+      const e2 = createExtras(h2.db);
+      const hitsAfterMigrate = e2.search.keyword('歌单', { sessionId: 's1' });
+      assert.equal(hitsAfterMigrate.length, 1);
+      assert.equal(hitsAfterMigrate[0].id, id1);
+
+      // 删除消息后触发器同步清理 msg_cjk2_fts
+      r2.deleteMsgsBySeq('s1', 1);
+      assert.equal(h2.db.prepare('SELECT COUNT(*) AS c FROM msg_cjk2_fts').get().c, 0);
+    } finally {
+      h2.close();
+    }
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 

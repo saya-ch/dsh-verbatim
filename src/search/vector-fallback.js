@@ -329,11 +329,21 @@ export function createFallbackVectorIndex({
    */
   function knn(kind, query, k) {
     ensureLoaded(kind);
-    const source = maps[kind];
     const out = [];
-    for (const [id, vec] of source) {
-      const score = dot(query, vec);
-      out.push({ id, distance: scoreToDistance(score) });
+    if (cappedKinds[kind] && fallbackTableReady) {
+      const col = PK_COLS[kind];
+      for (const r of stmt(`SELECT ${col} AS id, emb FROM ${FALLBACK_TABLES[kind]}`).iterate()) {
+        const id = Number(r.id);
+        const vec = toFloat32(/** @type {Uint8Array} */ (r.emb), dim, LOAD_LABELS[kind]);
+        const score = dot(query, vec);
+        out.push({ id, distance: scoreToDistance(score) });
+      }
+    } else {
+      const source = maps[kind];
+      for (const [id, vec] of source) {
+        const score = dot(query, vec);
+        out.push({ id, distance: scoreToDistance(score) });
+      }
     }
     out.sort((a, b) => a.distance - b.distance || a.id - b.id);
     return out.slice(0, k);
