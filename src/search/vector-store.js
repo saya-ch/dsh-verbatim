@@ -54,6 +54,7 @@ import {
   distanceToScore,
   scoreToDistance,
 } from './vector-math.js';
+import { createFallbackVectorIndex } from './vector-fallback.js';
 
 export {
   DEFAULT_DIM,
@@ -169,161 +170,16 @@ export function createVectorStore(handle, options = {}) {
 
   /* ---------------- 降级模式的内存索引 + 可选落盘 ---------------- */
 
-  /** @type {Map<number, Float32Array>} msgId → 单位向量（只有降级模式会填） */
-  const msgVectors = new Map();
-  /** @type {Map<number, Float32Array>} sceneId → 单位向量 */
-  const sceneVectors = new Map();
+  const fallback = createFallbackVectorIndex({
+    db,
+    stmt,
+    dim,
+    persistFallback,
+    hasVec,
+    logger,
+  });
 
-  /** 长文本分片向量（降级路径用；D-247） */
-  const chunkVectors = new Map();
-
-  /** 笔记向量（降级路径用） */
-  const noteVectors = new Map();
-
-  /** 场景内滑动对话窗向量（降级路径用） */
-  const windowVectors = new Map();
-
-  /** 降级落盘是否真的可用（只读库 / 建表失败就关掉，但内存索引照常工作） */
-  let fallbackTableReady = false;
-  let fallbackLoaded = false;
-
-  function ensureFallbackTables() {
-    if (hasVec || !persistFallback || fallbackTableReady) return fallbackTableReady;
-    try {
-      db.exec(
-        `CREATE TABLE IF NOT EXISTS ${FALLBACK_TABLES.msg} (
-           msg_id INTEGER PRIMARY KEY,
-           emb    BLOB NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS ${FALLBACK_TABLES.scene} (
-           scene_id INTEGER PRIMARY KEY,
-           emb      BLOB NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS ${FALLBACK_TABLES.chunk} (
-          chunk_id INTEGER PRIMARY KEY,
-          emb      BLOB NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS ${FALLBACK_TABLES.note} (
-          note_id INTEGER PRIMARY KEY,
-          emb     BLOB NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS ${FALLBACK_TABLES.window} (
-          window_id INTEGER PRIMARY KEY,
-          emb       BLOB NOT NULL
-        );`,
-      );
-      fallbackTableReady = true;
-    } catch (error) {
-      fallbackTableReady = false;
-      logger.warn(
-        `降级向量无法落盘（${error?.message ?? error}）；本次仅在内存里索引，重启后需要重建`,
-      );
-    }
-    return fallbackTableReady;
-  }
-
-  /**
-   * 首次用到降级索引时把落盘的向量读回内存，顺便清掉孤儿行
-   * （msg 被 rewind 物理删掉后，降级表没有 CASCADE，靠这步收尸）。
-   */
-  function ensureFallbackLoaded() {
-    if (fallbackLoaded || hasVec) return;
-    fallbackLoaded = true;
-    if (!ensureFallbackTables()) return;
-    try {
-      // 孤儿清理：删 msg 时 vec0 有 repo 顺手清，降级表没这个待遇
-      db.exec(`DELETE FROM ${FALLBACK_TABLES.msg} WHERE msg_id NOT IN (SELECT id FROM msg)`);
-      db.exec(`DELETE FROM ${FALLBACK_TABLES.scene} WHERE scene_id NOT IN (SELECT id FROM scene)`);
-      // **chunk 表也要清**（2026-11-18，A2 审计问题 2）：
-      // 之前这里漏了 chunk —— 降级模式重启后 `countChunkVec()` 永远是 0，
-      // 于是「长消息的语义向量」在进程重启后就永久消失（消息级还在，所以没人报警）。
-      try {
-        db.exec(`DELETE FROM ${FALLBACK_TABLES.chunk} WHERE chunk_id NOT IN (SELECT id FROM chunk)`);
-      } catch { /* 老库还没有 chunk 表 */ }
-      try {
-        db.exec(`DELETE FROM ${FALLBACK_TABLES.note} WHERE note_id NOT IN (SELECT id FROM note WHERE deleted_at IS NULL)`);
-      } catch { /* 老库还没有 note 表 */ }
-      try {
-        db.exec(`DELETE FROM ${FALLBACK_TABLES.window} WHERE window_id NOT IN (SELECT id FROM window)`);
-      } catch { /* 老库还没有 window 表 */ }
-      for (const r of stmt(`SELECT msg_id, emb FROM ${FALLBACK_TABLES.msg}`).all()) {
-        msgVectors.set(Number(r.msg_id), toFloat32(r.emb, dim, '降级表里的向量'));
-      }
-      for (const r of stmt(`SELECT scene_id, emb FROM ${FALLBACK_TABLES.scene}`).all()) {
-        sceneVectors.set(Number(r.scene_id), toFloat32(r.emb, dim, '降级表里的场景向量'));
-      }
-      // 分片向量也要读回内存 —— 少这一步，降级模式下 knnChunk 永远召回 0 条
-      try {
-        for (const r of stmt(`SELECT chunk_id, emb FROM ${FALLBACK_TABLES.chunk}`).all()) {
-          chunkVectors.set(Number(r.chunk_id), toFloat32(r.emb, dim, '降级表里的分片向量'));
-        }
-      } catch { /* 老库还没有 chunk 降级表 */ }
-      try {
-        for (const r of stmt(`SELECT note_id, emb FROM ${FALLBACK_TABLES.note}`).all()) {
-          noteVectors.set(Number(r.note_id), toFloat32(r.emb, dim, '降级表里的笔记向量'));
-        }
-      } catch { /* 老库还没有 note 降级表 */ }
-      try {
-        for (const r of stmt(`SELECT window_id, emb FROM ${FALLBACK_TABLES.window}`).all()) {
-          windowVectors.set(Number(r.window_id), toFloat32(r.emb, dim, '降级表里的对话窗向量'));
-        }
-      } catch { /* 老库还没有 window 降级表 */ }
-    } catch (error) {
-      logger.warn(`读取降级向量失败，改用本次进程内已索引的部分：${error?.message ?? error}`);
-    }
-  }
-
-  if (!hasVec) ensureFallbackLoaded();
-
-  /**
-   * 降级模式：**落盘表才是权威，内存 Map 只是缓存**。
-   *
-   * 为什么需要这一步（R5 实测的 P1）：`repo.deleteMsgsBySeq` 清的是持久化那份
-   * （它没有、也不该有本进程 store 的引用），内存里这份仍然是旧的。
-   * 于是「原文删了、向量表也删了，但内存还带着那条向量」——
-   * 在 id 不复用（v5）之后它召回不出去，但会让条数统计失真，
-   * 也让「撤回后立刻查」这种断言变得不可靠。
-   *
-   * 靠大小对账来发现漂移：所有写入都经过本模块（Map 与表同步增减），
-   * 只有外部删除会让「表比 Map 少」。一旦不相等就以表为准重载。
-   * 代价是每次两下 COUNT(*)，7k 条量级在 0.2 ms 以内，远小于一次暴力余弦。
-   */
-  function syncFallbackIndexIfStale() {
-    if (hasVec || !fallbackTableReady) return; // 没落盘表就没有可比对的权威
-    try {
-      const tableMsgs = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.msg}`).get().c ?? 0);
-      const tableScenes = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.scene}`).get().c ?? 0);
-      let tableWindows = windowVectors.size;
-      let tableChunks = chunkVectors.size;
-      let tableNotes = noteVectors.size;
-      try {
-        tableWindows = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.window}`).get().c ?? 0);
-      } catch { /* ignore */ }
-      try {
-        tableChunks = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.chunk}`).get().c ?? 0);
-      } catch { /* ignore */ }
-      try {
-        tableNotes = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.note}`).get().c ?? 0);
-      } catch { /* ignore */ }
-      if (
-        tableMsgs !== msgVectors.size
-        || tableScenes !== sceneVectors.size
-        || tableWindows !== windowVectors.size
-        || tableChunks !== chunkVectors.size
-        || tableNotes !== noteVectors.size
-      ) {
-        msgVectors.clear();
-        sceneVectors.clear();
-        windowVectors.clear();
-        chunkVectors.clear();
-        noteVectors.clear();
-        fallbackLoaded = false;
-        ensureFallbackLoaded();
-      }
-    } catch {
-      // 表读不到就按现有内存索引继续用，别把查询搞崩
-    }
-  }
+  if (!hasVec) fallback.ensureLoaded();
 
   /* ---------------------------- 写入 ---------------------------- */
 
@@ -340,11 +196,7 @@ export function createVectorStore(handle, options = {}) {
     if (hasVec) {
       stmt('INSERT INTO vec_msg (msg_id, emb) VALUES (?, ?)').run(pk(id, 'insertMsgVec'), toBlob(vector));
     } else {
-      msgVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT INTO ${FALLBACK_TABLES.msg} (msg_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.insertUnsafe('msg', id, vector);
     }
   }
 
@@ -355,11 +207,7 @@ export function createVectorStore(handle, options = {}) {
       stmt('DELETE FROM vec_msg WHERE msg_id = ?').run(pk(id, 'upsertMsgVec'));
       stmt('INSERT INTO vec_msg (msg_id, emb) VALUES (?, ?)').run(pk(id, 'upsertMsgVec'), toBlob(vector));
     } else {
-      msgVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT OR REPLACE INTO ${FALLBACK_TABLES.msg} (msg_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.upsertUnsafe('msg', id, vector);
     }
   }
 
@@ -369,11 +217,7 @@ export function createVectorStore(handle, options = {}) {
     if (hasVec) {
       stmt('INSERT INTO vec_chunk (chunk_id, emb) VALUES (?, ?)').run(pk(id, 'insertChunkVec'), toBlob(vector));
     } else {
-      chunkVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT INTO ${FALLBACK_TABLES.chunk} (chunk_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.insertUnsafe('chunk', id, vector);
     }
   }
 
@@ -383,11 +227,7 @@ export function createVectorStore(handle, options = {}) {
       stmt('DELETE FROM vec_chunk WHERE chunk_id = ?').run(pk(id, 'upsertChunkVec'));
       stmt('INSERT INTO vec_chunk (chunk_id, emb) VALUES (?, ?)').run(pk(id, 'upsertChunkVec'), toBlob(vector));
     } else {
-      chunkVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT OR REPLACE INTO ${FALLBACK_TABLES.chunk} (chunk_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.upsertUnsafe('chunk', id, vector);
     }
   }
 
@@ -399,19 +239,14 @@ export function createVectorStore(handle, options = {}) {
         return 0;
       }
     }
-    syncFallbackIndexIfStale();
-    ensureFallbackLoaded();
-    return chunkVectors.size;
+    return fallback.count('chunk');
   }
 
-  function insertSceneVecUnsafe(id, vector) {    if (hasVec) {
+  function insertSceneVecUnsafe(id, vector) {
+    if (hasVec) {
       stmt('INSERT INTO vec_scene (scene_id, emb) VALUES (?, ?)').run(pk(id, 'insertSceneVec'), toBlob(vector));
     } else {
-      sceneVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT INTO ${FALLBACK_TABLES.scene} (scene_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.insertUnsafe('scene', id, vector);
     }
   }
 
@@ -420,11 +255,7 @@ export function createVectorStore(handle, options = {}) {
       stmt('DELETE FROM vec_scene WHERE scene_id = ?').run(pk(id, 'upsertSceneVec'));
       stmt('INSERT INTO vec_scene (scene_id, emb) VALUES (?, ?)').run(pk(id, 'upsertSceneVec'), toBlob(vector));
     } else {
-      sceneVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT OR REPLACE INTO ${FALLBACK_TABLES.scene} (scene_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.upsertUnsafe('scene', id, vector);
     }
   }
 
@@ -433,11 +264,7 @@ export function createVectorStore(handle, options = {}) {
       stmt('DELETE FROM vec_note WHERE note_id = ?').run(pk(id, 'upsertNoteVec'));
       stmt('INSERT INTO vec_note (note_id, emb) VALUES (?, ?)').run(pk(id, 'upsertNoteVec'), toBlob(vector));
     } else {
-      noteVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT OR REPLACE INTO ${FALLBACK_TABLES.note} (note_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.upsertUnsafe('note', id, vector);
     }
   }
 
@@ -446,11 +273,7 @@ export function createVectorStore(handle, options = {}) {
       stmt('DELETE FROM vec_window WHERE window_id = ?').run(pk(id, 'upsertWindowVec'));
       stmt('INSERT INTO vec_window (window_id, emb) VALUES (?, ?)').run(pk(id, 'upsertWindowVec'), toBlob(vector));
     } else {
-      windowVectors.set(Number(id), vector);
-      if (ensureFallbackTables()) {
-        stmt(`INSERT OR REPLACE INTO ${FALLBACK_TABLES.window} (window_id, emb) VALUES (?, ?)`)
-          .run(Number(id), toBlob(vector));
-      }
+      fallback.upsertUnsafe('window', id, vector);
     }
   }
 
@@ -462,9 +285,7 @@ export function createVectorStore(handle, options = {}) {
         return 0;
       }
     }
-    ensureFallbackLoaded();
-    syncFallbackIndexIfStale();
-    return windowVectors.size;
+    return fallback.count('window');
   }
 
   /* ---------------------------- 候选召回 ---------------------------- */
@@ -517,24 +338,7 @@ export function createVectorStore(handle, options = {}) {
     }
 
     // 降级：内存暴力余弦（单位向量下点积就是余弦）
-    ensureFallbackLoaded();
-    const source = kind === 'msg'
-      ? msgVectors
-      : kind === 'chunk'
-        ? chunkVectors
-        : kind === 'note'
-          ? noteVectors
-          : kind === 'window'
-            ? windowVectors
-            : sceneVectors;
-    const out = [];
-    for (const [id, vec] of source) {
-      const score = dot(query, vec);
-      // 换算成 L2 距离，和 vec0 的 distance 同一口径（文件头 ③）
-      out.push({ id, distance: scoreToDistance(score) });
-    }
-    out.sort((a, b) => a.distance - b.distance || a.id - b.id);
-    return out.slice(0, k);
+    return fallback.knn(kind, query, k);
   }
 
   /** 拼 `?,?,?` */
@@ -720,16 +524,12 @@ export function createVectorStore(handle, options = {}) {
 
   function countMsgVec() {
     if (hasVec) return Number(stmt('SELECT COUNT(*) AS c FROM vec_msg').get().c ?? 0);
-    ensureFallbackLoaded();
-    syncFallbackIndexIfStale(); // 外部（repo）删过向量就以落盘表为准重载
-    return msgVectors.size;
+    return fallback.count('msg');
   }
 
   function countSceneVec() {
     if (hasVec) return Number(stmt('SELECT COUNT(*) AS c FROM vec_scene').get().c ?? 0);
-    ensureFallbackLoaded();
-    syncFallbackIndexIfStale();
-    return sceneVectors.size;
+    return fallback.count('scene');
   }
 
   function countNoteVec() {
@@ -740,9 +540,7 @@ export function createVectorStore(handle, options = {}) {
         return 0;
       }
     }
-    ensureFallbackLoaded();
-    syncFallbackIndexIfStale();
-    return noteVectors.size;
+    return fallback.count('note');
   }
 
   function hydrateNotes(ids, filter = {}) {
@@ -868,16 +666,8 @@ export function createVectorStore(handle, options = {}) {
     const minScore = Number.isFinite(filter.minScore) ? filter.minScore : null;
 
     if (!hasVec) {
-      ensureFallbackLoaded();
-      const source = kind === 'msg'
-        ? msgVectors
-        : kind === 'chunk'
-          ? chunkVectors
-          : kind === 'note'
-            ? noteVectors
-            : kind === 'window'
-              ? windowVectors
-              : sceneVectors;
+      fallback.ensureLoaded();
+      const source = fallback.mapOf(kind);
       const allowed = prefilterFallbackIds(kind, filter, source.size);
       if (allowed && allowed.size === 0) return [];
 
@@ -1022,28 +812,13 @@ export function createVectorStore(handle, options = {}) {
         });
         return removed;
       }
-      ensureFallbackLoaded();
-      let removed = 0;
-      withTx(db, () => {
-        const tableReady = ensureFallbackTables();
-        const del = tableReady ? stmt(`DELETE FROM ${FALLBACK_TABLES.msg} WHERE msg_id = ?`) : null;
-        for (const id of ids) {
-          if (msgVectors.delete(id)) removed += 1;
-          if (del) del.run(id);
-        }
-      });
-      return removed;
+      return fallback.deleteIds('msg', ids, { countRemovedByExistence: true });
     },
 
     /** 删一条消息向量（rewind 物理删消息时用；repo 那边自己也会清持久化那份） */
     deleteMsgVec(msgId) {
       if (hasVec) return Number(stmt('DELETE FROM vec_msg WHERE msg_id = ?').run(pk(msgId, 'deleteMsgVec')).changes);
-      ensureFallbackLoaded();
-      const existed = msgVectors.delete(Number(msgId));
-      if (ensureFallbackTables()) {
-        stmt(`DELETE FROM ${FALLBACK_TABLES.msg} WHERE msg_id = ?`).run(Number(msgId));
-      }
-      return existed ? 1 : 0;
+      return fallback.deleteOne('msg', msgId);
     },
 
     insertSceneVec(sceneId, vector) {
@@ -1094,29 +869,14 @@ export function createVectorStore(handle, options = {}) {
         });
         return removed;
       }
-      ensureFallbackLoaded();
-      let removed = 0;
-      withTx(db, () => {
-        const tableReady = ensureFallbackTables();
-        const del = tableReady ? stmt(`DELETE FROM ${FALLBACK_TABLES.scene} WHERE scene_id = ?`) : null;
-        for (const id of ids) {
-          if (sceneVectors.delete(id)) removed += 1;
-          if (del) del.run(id);
-        }
-      });
-      return removed;
+      return fallback.deleteIds('scene', ids, { countRemovedByExistence: true });
     },
 
     deleteSceneVec(sceneId) {
       if (hasVec) {
         return Number(stmt('DELETE FROM vec_scene WHERE scene_id = ?').run(pk(sceneId, 'deleteSceneVec')).changes);
       }
-      ensureFallbackLoaded();
-      const existed = sceneVectors.delete(Number(sceneId));
-      if (ensureFallbackTables()) {
-        stmt(`DELETE FROM ${FALLBACK_TABLES.scene} WHERE scene_id = ?`).run(Number(sceneId));
-      }
-      return existed ? 1 : 0;
+      return fallback.deleteOne('scene', sceneId);
     },
 
     /** 清空消息向量（重建索引用） */
@@ -1125,9 +885,7 @@ export function createVectorStore(handle, options = {}) {
         stmt('DELETE FROM vec_msg').run();
         return;
       }
-      ensureFallbackLoaded();
-      msgVectors.clear();
-      if (ensureFallbackTables()) stmt(`DELETE FROM ${FALLBACK_TABLES.msg}`).run();
+      fallback.clear('msg', { ensureFirst: true });
     },
 
     clearSceneVec() {
@@ -1135,9 +893,7 @@ export function createVectorStore(handle, options = {}) {
         stmt('DELETE FROM vec_scene').run();
         return;
       }
-      ensureFallbackLoaded();
-      sceneVectors.clear();
-      if (ensureFallbackTables()) stmt(`DELETE FROM ${FALLBACK_TABLES.scene}`).run();
+      fallback.clear('scene', { ensureFirst: true });
     },
 
     /**
@@ -1195,53 +951,7 @@ export function createVectorStore(handle, options = {}) {
         return removed;
       }
 
-      ensureFallbackLoaded();
-      if (!ensureFallbackTables()) {
-        // 没落盘就只剩内存这份，按 msg/scene 现有 id 对一遍
-        const msgIds = new Set(stmt('SELECT id FROM msg').all().map((r) => Number(r.id)));
-        for (const id of [...msgVectors.keys()]) {
-          if (!msgIds.has(id)) {
-            msgVectors.delete(id);
-            removed.msgVectors += 1;
-          }
-        }
-        const sceneIds = new Set(stmt('SELECT id FROM scene').all().map((r) => Number(r.id)));
-        for (const id of [...sceneVectors.keys()]) {
-          if (!sceneIds.has(id)) {
-            sceneVectors.delete(id);
-            removed.sceneVectors += 1;
-          }
-        }
-        return removed;
-      }
-      withTx(db, () => {
-        removed.msgVectors = Number(
-          stmt(`DELETE FROM ${FALLBACK_TABLES.msg} WHERE msg_id NOT IN (SELECT id FROM msg)`).run().changes,
-        );
-        removed.sceneVectors = Number(
-          stmt(`DELETE FROM ${FALLBACK_TABLES.scene} WHERE scene_id NOT IN (SELECT id FROM scene)`).run().changes,
-        );
-        // 降级分支同样要清分片孤儿（2026-11-18，A2 问题 5）
-        try {
-          removed.chunkVectors = Number(
-            stmt(`DELETE FROM ${FALLBACK_TABLES.chunk} WHERE chunk_id NOT IN (SELECT id FROM chunk)`).run().changes,
-          );
-        } catch { /* 没有 chunk 降级表 */ }
-        try {
-          removed.windowVectors = Number(
-            stmt(`DELETE FROM ${FALLBACK_TABLES.window} WHERE window_id NOT IN (SELECT id FROM window)`).run().changes,
-          );
-        } catch { /* 没有 window 降级表 */ }
-      });
-      // 内存那份跟着落盘表重建
-      msgVectors.clear();
-      sceneVectors.clear();
-      windowVectors.clear();
-      chunkVectors.clear();
-      noteVectors.clear();
-      fallbackLoaded = false;
-      ensureFallbackLoaded();
-      return removed;
+      return fallback.pruneOrphans();
     },
 
     clearAll() {
@@ -1321,15 +1031,12 @@ export function createVectorStore(handle, options = {}) {
     deleteChunkVecs(ids) {
       const list = Array.from(ids, (x) => Number(x)).filter((x) => Number.isFinite(x));
       if (list.length === 0) return 0;
+      if (!hasVec) return fallback.deleteIds('chunk', list, { ignoreErrors: true });
       let n = 0;
       withTx(db, () => {
         for (const id of list) {
           try {
-            if (hasVec) stmt('DELETE FROM vec_chunk WHERE chunk_id = ?').run(pk(id, 'deleteChunkVec'));
-            else chunkVectors.delete(id);
-            if (!hasVec && ensureFallbackTables()) {
-              stmt(`DELETE FROM ${FALLBACK_TABLES.chunk} WHERE chunk_id = ?`).run(id);
-            }
+            stmt('DELETE FROM vec_chunk WHERE chunk_id = ?').run(pk(id, 'deleteChunkVec'));
             n += 1;
           } catch { /* 不存在就当删过 */ }
         }
@@ -1342,10 +1049,7 @@ export function createVectorStore(handle, options = {}) {
       if (hasVec) {
         try { db.exec('DELETE FROM vec_chunk'); } catch { /* 表不存在 */ }
       } else {
-        chunkVectors.clear();
-        if (ensureFallbackTables()) {
-          try { db.exec(`DELETE FROM ${FALLBACK_TABLES.chunk}`); } catch { /* ignore */ }
-        }
+        fallback.clear('chunk', { ignoreErrors: true });
       }
     },
 
@@ -1427,9 +1131,7 @@ export function createVectorStore(handle, options = {}) {
           return list;
         }
       }
-      ensureFallbackLoaded();
-      syncFallbackIndexIfStale();
-      return list.filter((id) => !noteVectors.has(id));
+      return fallback.missingIds('note', list);
     },
 
     /** 批量幂等写入笔记向量 */
@@ -1446,15 +1148,12 @@ export function createVectorStore(handle, options = {}) {
     deleteNoteVecs(ids) {
       const list = Array.from(ids, (x) => Number(x)).filter((x) => Number.isFinite(x));
       if (list.length === 0) return 0;
+      if (!hasVec) return fallback.deleteIds('note', list, { ignoreErrors: true });
       let n = 0;
       withTx(db, () => {
         for (const id of list) {
           try {
-            if (hasVec) stmt('DELETE FROM vec_note WHERE note_id = ?').run(pk(id, 'deleteNoteVec'));
-            else noteVectors.delete(id);
-            if (!hasVec && ensureFallbackTables()) {
-              stmt(`DELETE FROM ${FALLBACK_TABLES.note} WHERE note_id = ?`).run(id);
-            }
+            stmt('DELETE FROM vec_note WHERE note_id = ?').run(pk(id, 'deleteNoteVec'));
             n += 1;
           } catch { /* ignore */ }
         }
@@ -1504,15 +1203,12 @@ export function createVectorStore(handle, options = {}) {
     deleteWindowVecs(ids) {
       const list = Array.from(ids ?? [], (x) => Number(x)).filter((x) => Number.isSafeInteger(x));
       if (list.length === 0) return 0;
+      if (!hasVec) return fallback.deleteIds('window', list, { ignoreErrors: true });
       let n = 0;
       withTx(db, () => {
         for (const id of list) {
           try {
-            if (hasVec) stmt('DELETE FROM vec_window WHERE window_id = ?').run(pk(id, 'deleteWindowVec'));
-            else windowVectors.delete(id);
-            if (!hasVec && ensureFallbackTables()) {
-              stmt(`DELETE FROM ${FALLBACK_TABLES.window} WHERE window_id = ?`).run(id);
-            }
+            stmt('DELETE FROM vec_window WHERE window_id = ?').run(pk(id, 'deleteWindowVec'));
             n += 1;
           } catch { /* ignore */ }
         }
@@ -1524,10 +1220,7 @@ export function createVectorStore(handle, options = {}) {
       if (hasVec) {
         try { db.exec('DELETE FROM vec_window'); } catch { /* 表不存在 */ }
       } else {
-        windowVectors.clear();
-        if (ensureFallbackTables()) {
-          try { db.exec(`DELETE FROM ${FALLBACK_TABLES.window}`); } catch { /* ignore */ }
-        }
+        fallback.clear('window', { ignoreErrors: true });
       }
     },
 
@@ -1538,24 +1231,17 @@ export function createVectorStore(handle, options = {}) {
      */
     getWindowVecs(ids) {
       const list = [...new Set(Array.from(ids ?? [], (x) => Number(x)).filter((x) => Number.isSafeInteger(x) && x > 0))];
+      if (list.length === 0) return new Map();
+      if (!hasVec) return fallback.getVecs('window', list);
       const out = new Map();
-      if (list.length === 0) return out;
-      if (hasVec) {
-        try {
-          queryByIds(list, (slice) => {
-            const rows = db.prepare(`SELECT window_id, emb FROM vec_window WHERE window_id IN (${placeholders(slice.length)})`).all(...slice.map((id) => BigInt(id)));
-            for (const r of rows) {
-              if (r?.emb) out.set(Number(r.window_id), toFloat32(r.emb, dim, `window ${r.window_id} 的向量`));
-            }
-          });
-        } catch { /* ignore */ }
-      } else {
-        ensureFallbackLoaded();
-        for (const id of list) {
-          const v = windowVectors.get(id);
-          if (v) out.set(id, v);
-        }
-      }
+      try {
+        queryByIds(list, (slice) => {
+          const rows = db.prepare(`SELECT window_id, emb FROM vec_window WHERE window_id IN (${placeholders(slice.length)})`).all(...slice.map((id) => BigInt(id)));
+          for (const r of rows) {
+            if (r?.emb) out.set(Number(r.window_id), toFloat32(r.emb, dim, `window ${r.window_id} 的向量`));
+          }
+        });
+      } catch { /* ignore */ }
       return out;
     },
 
@@ -1617,7 +1303,7 @@ export function createVectorStore(handle, options = {}) {
      */
     hydrateMsgVectors(entries) {
       if (hasVec) throw new Error('hydrateMsgVectors 只在降级模式（hasVec=false）下有意义');
-      ensureFallbackLoaded();
+      fallback.ensureLoaded();
       withTx(db, () => {
         for (const [id, v] of entries) upsertMsgVecUnsafe(id, normalizeVector(v, dim, `msg ${id} 的向量`));
       });
@@ -1625,7 +1311,7 @@ export function createVectorStore(handle, options = {}) {
 
     hydrateSceneVectors(entries) {
       if (hasVec) throw new Error('hydrateSceneVectors 只在降级模式（hasVec=false）下有意义');
-      ensureFallbackLoaded();
+      fallback.ensureLoaded();
       withTx(db, () => {
         for (const [id, v] of entries) upsertSceneVecUnsafe(id, normalizeVector(v, dim, `scene ${id} 的向量`));
       });
@@ -1643,7 +1329,7 @@ export function createVectorStore(handle, options = {}) {
         windowVectors: countWindowVec(),
         sceneVectors: countSceneVec(),
         noteVectors: countNoteVec(),
-        fallbackPersisted: Boolean(hasVec ? false : fallbackTableReady),
+        fallbackPersisted: Boolean(hasVec ? false : fallback.isTableReady()),
       };
     },
   };
