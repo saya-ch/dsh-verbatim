@@ -58,7 +58,7 @@
             setFlash({ kind: 'ok', text: t(okKey) });
             await Promise.all([loadDays(), loadStatus()]);
             const nextId = nextSceneIdFn ? nextSceneIdFn(res) : scene.sceneId;
-            if (nextId) await openScene(nextId, true);
+            if (nextId) await openScene(nextId, true, true);
           } catch (e) {
             if (alive.current) setFlash({ kind: 'err', text: msgOf(e) });
           } finally {

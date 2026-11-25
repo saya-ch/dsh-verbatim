@@ -754,7 +754,7 @@ export function createVectorStore(handle, options = {}) {
 
     /** 删掉这些分片向量 */
     deleteChunkVecs(ids) {
-      const list = Array.from(ids, (x) => Number(x)).filter((x) => Number.isFinite(x));
+      const list = Array.from(ids ?? [], (x) => Number(x)).filter((x) => Number.isFinite(x));
       if (list.length === 0) return 0;
       if (!hasVec) return fallback.deleteIds('chunk', list, { ignoreErrors: true });
       let n = 0;
@@ -871,7 +871,7 @@ export function createVectorStore(handle, options = {}) {
 
     /** 删除指定笔记向量 */
     deleteNoteVecs(ids) {
-      const list = Array.from(ids, (x) => Number(x)).filter((x) => Number.isFinite(x));
+      const list = Array.from(ids ?? [], (x) => Number(x)).filter((x) => Number.isFinite(x));
       if (list.length === 0) return 0;
       if (!hasVec) return fallback.deleteIds('note', list, { ignoreErrors: true });
       let n = 0;

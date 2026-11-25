@@ -312,6 +312,7 @@ export async function applyRerank(rerankCfg, query, hits, repo = null) {
     const used = new Set();
     const reordered = [];
     for (const r of ranked) {
+      if (!Number.isInteger(r?.index) || r.index < 0 || r.index >= head.length || used.has(r.index)) continue;
       used.add(r.index);
       reordered.push({ ...head[r.index], rerankScore: r.score });
     }
@@ -375,16 +376,22 @@ function hydrateWindowHit(win, { repo, includeExcluded, queryTerms = [], bounds 
   const startId = Number(win.startMsgId);
   const endId = Number(win.endMsgId);
   const inWin = smsgs.filter((m) => Number(m.id) >= startId && Number(m.id) <= endId);
+  const pickPool = bounds
+    ? (() => {
+        const inBounds = inWin.filter((m) => m.at >= bounds.from && m.at < bounds.to);
+        return inBounds.length > 0 ? inBounds : inWin;
+      })()
+    : inWin;
   let anchor = null;
-  if (inWin.length > 0) {
+  if (pickPool.length > 0) {
     if (queryTerms.length > 0) {
-      anchor = inWin.find((m) => {
+      anchor = pickPool.find((m) => {
         const t = String(m.text ?? '');
         return queryTerms.some((term) => term && t.includes(term));
       }) ?? null;
     }
     if (!anchor) {
-      anchor = inWin.find((m) => m.speaker === 'user' && String(m.text ?? '').trim().length >= 4) ?? inWin[0];
+      anchor = pickPool.find((m) => m.speaker === 'user' && String(m.text ?? '').trim().length >= 4) ?? pickPool[0];
     }
   } else if (typeof repo.msgsByIds === 'function' && Number.isSafeInteger(startId)) {
     try {

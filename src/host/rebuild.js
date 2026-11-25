@@ -211,7 +211,7 @@ export function createRebuildManager({
       while (cursor < scRows.length) {
         const sc = scRows[cursor++];
         try {
-          const msgs = repo.msgsByScene(sc.id, { includeExcluded: false });
+          const msgs = repo.msgsByScene(sc.id, false);
           if (msgs.length > 0) {
             const gr = await generateGist({ llm, msgs, startAt: sc.startAt, endAt: sc.endAt });
             if (gr.ok && gr.gist) {

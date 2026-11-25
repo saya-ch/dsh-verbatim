@@ -150,10 +150,23 @@ export async function searchRankedNotes(opts) {
   const hasRange = Number.isFinite(from) && Number.isFinite(to);
   const pool = fetchCandidateNotes({ extras, sessionId, query: q, from, to, limit });
 
-  // 懒补向量时需要最近笔记列表（无 query 命中时 pool 已经是最新笔记）
-  const embedPool = q && pool.length === 0 && typeof extras?.note?.list === 'function'
-    ? extras.note.list({ limit: 64, sessionId, ...(hasRange ? { from, to } : {}) })
-    : pool;
+  // 懒补向量时需要最近笔记列表（keyword pool 只含命中词条，需补入最近活跃笔记以便纯语义命中）
+  let embedPool = pool;
+  if (q && typeof extras?.note?.list === 'function') {
+    const recent = extras.note.list({ limit: 64, sessionId, ...(hasRange ? { from, to } : {}) });
+    if (pool.length === 0) {
+      embedPool = recent;
+    } else if (Array.isArray(recent) && recent.length > 0) {
+      const seenIds = new Set(pool.map((n) => Number(n.id)));
+      embedPool = [...pool];
+      for (const n of recent) {
+        if (!seenIds.has(Number(n.id))) {
+          seenIds.add(Number(n.id));
+          embedPool.push(n);
+        }
+      }
+    }
+  }
 
   if (!q) {
     return { hits: pool.slice(0, limit), totalMatched: pool.length, semanticUsed: false, queryVec };

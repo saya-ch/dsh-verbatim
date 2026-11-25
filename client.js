@@ -5190,8 +5190,8 @@ window.__ModuleLoader__.load({
         setScene(null);
       };
 
-      const openScene = async (sceneId, forceOpen = false) => {
-        if (forceOpen && scene && scene.sceneId === sceneId && scene.detail && !scene.error) {
+      const openScene = async (sceneId, forceOpen = false, reload = false) => {
+        if (forceOpen && !reload && scene && scene.sceneId === sceneId && scene.detail && !scene.error) {
           return;
         }
         // **加载中点第二次 = 取消**（2026-11-18，A4 BUG 6）：
@@ -5912,7 +5912,7 @@ window.__ModuleLoader__.load({
             setFlash({ kind: 'ok', text: t(okKey) });
             await Promise.all([loadDays(), loadStatus()]);
             const nextId = nextSceneIdFn ? nextSceneIdFn(res) : scene.sceneId;
-            if (nextId) await openScene(nextId, true);
+            if (nextId) await openScene(nextId, true, true);
           } catch (e) {
             if (alive.current) setFlash({ kind: 'err', text: msgOf(e) });
           } finally {

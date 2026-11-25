@@ -332,7 +332,8 @@ export async function importSession(sessionFile, dbPathOrOpts, maybeOpts) {
 
   // ── ③④ 导出与入库 ──────────────────────────────────────────
   const store = adaptStore(opts);
-  const tailEvents = Array.isArray(reader.tailEvents) ? reader.tailEvents : null;
+  try {
+    const tailEvents = Array.isArray(reader.tailEvents) ? reader.tailEvents : null;
   const excludeSig = JSON.stringify(cfg.excludeRanges ?? []);
   const prevExcludeSig = prevReaderState?.excludeSig ?? null;
   const canTailFastPath = Boolean(
@@ -479,8 +480,10 @@ export async function importSession(sessionFile, dbPathOrOpts, maybeOpts) {
     totalMs: progress.totalMs(),
   };
 
-  if (opts.handle === undefined) store.close();
-  return out;
+    return out;
+  } finally {
+    if (opts.handle === undefined) store.close();
+  }
 }
 
 /**
@@ -567,7 +570,8 @@ export async function rebuildDerived(opts = {}) {
   const warnings = [];
 
   const store = adaptStore(opts);
-  const { repo, extras } = store;
+  try {
+    const { repo, extras } = store;
 
   /* 向量 store 全流程只建一个实例：
    *   ① 场景重建要用它清掉旧场景的内存向量（降级模式下是独立一份拷贝）
@@ -690,8 +694,10 @@ export async function rebuildDerived(opts = {}) {
     }
   }
 
-  if (opts.handle === undefined) store.close();
-  return out;
+    return out;
+  } finally {
+    if (opts.handle === undefined) store.close();
+  }
 }
 
 /**

@@ -314,8 +314,8 @@
         setScene(null);
       };
 
-      const openScene = async (sceneId, forceOpen = false) => {
-        if (forceOpen && scene && scene.sceneId === sceneId && scene.detail && !scene.error) {
+      const openScene = async (sceneId, forceOpen = false, reload = false) => {
+        if (forceOpen && !reload && scene && scene.sceneId === sceneId && scene.detail && !scene.error) {
           return;
         }
         // **加载中点第二次 = 取消**（2026-11-18，A4 BUG 6）：

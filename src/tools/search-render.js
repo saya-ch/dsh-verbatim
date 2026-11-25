@@ -423,7 +423,7 @@ export function formatTrashHint(extras, sessionId) {
   if (typeof extras?.note?.list !== 'function') return null;
   try {
     const all = extras.note.list({ limit: 20, includeDeleted: true, sessionId });
-    const deleted = Array.isArray(all) ? all.filter((n) => n && n.deletedAt !== null) : [];
+    const deleted = Array.isArray(all) ? all.filter((n) => n && n.deletedAt !== null && n.deletedAt !== undefined) : [];
     if (deleted.length === 0) return null;
     const preview = deleted.slice(0, 3).map((n) => {
       const txt = String(n.content ?? '').replace(/\s+/g, ' ').trim();

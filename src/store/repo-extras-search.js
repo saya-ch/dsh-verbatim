@@ -313,23 +313,27 @@ export function createMediaExtras({ db, stmt, p, withTx }) {
       const ids = [...new Set(msgIds.map((x) => Number(x)).filter((x) => Number.isSafeInteger(x) && x > 0))];
       if (ids.length === 0) return out;
       try {
-        const ph = ids.map(() => '?').join(',');
-        const rows = db
-          .prepare(`SELECT id, msg_id, path, sha256, width, height, caption, created_at FROM media WHERE msg_id IN (${ph}) ORDER BY id ASC`)
-          .all(...ids.map(p));
-        for (const r of rows) {
-          const mid = Number(r.msg_id);
-          if (!out.has(mid)) out.set(mid, []);
-          out.get(mid).push({
-            id: Number(r.id),
-            msgId: mid,
-            path: String(r.path),
-            sha256: r.sha256 ?? null,
-            width: r.width === null || r.width === undefined ? null : Number(r.width),
-            height: r.height === null || r.height === undefined ? null : Number(r.height),
-            caption: r.caption ?? null,
-            createdAt: Number(r.created_at),
-          });
+        const CHUNK = 400;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const slice = ids.slice(i, i + CHUNK);
+          const ph = slice.map(() => '?').join(',');
+          const rows = db
+            .prepare(`SELECT id, msg_id, path, sha256, width, height, caption, created_at FROM media WHERE msg_id IN (${ph}) ORDER BY id ASC`)
+            .all(...slice.map(p));
+          for (const r of rows) {
+            const mid = Number(r.msg_id);
+            if (!out.has(mid)) out.set(mid, []);
+            out.get(mid).push({
+              id: Number(r.id),
+              msgId: mid,
+              path: String(r.path),
+              sha256: r.sha256 ?? null,
+              width: r.width === null || r.width === undefined ? null : Number(r.width),
+              height: r.height === null || r.height === undefined ? null : Number(r.height),
+              caption: r.caption ?? null,
+              createdAt: Number(r.created_at),
+            });
+          }
         }
       } catch { /* 老库可能无 media 表 */ }
       return out;
@@ -453,13 +457,19 @@ export function createWindowExtras({ db, stmt, p, withTx, deleteVecRows }) {
       if (ids.length === 0) return 0;
       return withTx(db, () => {
         try {
-          const ph = ids.map(() => '?').join(',');
-          const winIds = db
-            .prepare(`SELECT id FROM window WHERE scene_id IN (${ph})`)
-            .all(...ids.map(p))
-            .map((r) => Number(r.id));
-          if (winIds.length > 0) deleteVecRows(db, 'window', winIds);
-          return Number(db.prepare(`DELETE FROM window WHERE scene_id IN (${ph})`).run(...ids.map(p)).changes);
+          let total = 0;
+          const CHUNK = 400;
+          for (let i = 0; i < ids.length; i += CHUNK) {
+            const slice = ids.slice(i, i + CHUNK);
+            const ph = slice.map(() => '?').join(',');
+            const winIds = db
+              .prepare(`SELECT id FROM window WHERE scene_id IN (${ph})`)
+              .all(...slice.map(p))
+              .map((r) => Number(r.id));
+            if (winIds.length > 0) deleteVecRows(db, 'window', winIds);
+            total += Number(db.prepare(`DELETE FROM window WHERE scene_id IN (${ph})`).run(...slice.map(p)).changes);
+          }
+          return total;
         } catch {
           return 0;
         }

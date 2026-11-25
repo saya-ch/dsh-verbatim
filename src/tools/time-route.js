@@ -273,7 +273,8 @@ export function parseWhen(when, now = Date.now(), opts = {}) {
     return { kind: 'day', from: day, to: day + DAY_MS, label: fmtLongDate(day, tzOffsetMs) };
   }
   if (/^\d{10,13}$/.test(raw)) {
-    const ms = Number(raw);
+    const rawNum = Number(raw);
+    const ms = raw.length === 10 ? rawNum * 1000 : rawNum;
     if (Number.isFinite(ms)) {
       const day = startOfDay(ms, tzOffsetMs);
       return { kind: 'day', from: day, to: day + DAY_MS, label: fmtLongDate(day, tzOffsetMs) };

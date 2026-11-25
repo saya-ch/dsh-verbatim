@@ -672,7 +672,7 @@ export function createSearchTool(deps = {}) {
             ? `你自己记的 — ${noteTotalText}`
             : `你自己记的（高权重置顶） — ${noteTotalText}`;
           parts.push('', noteHeading, '');
-          parts.push(shownNotes.map(renderNote).join('\n\n'));
+          parts.push(shownNotes.map((n) => renderNote(n, { aboutLabels: deps.aboutLabels ?? null })).join('\n\n'));
         }
         if (shown.length > 0) {
           parts.push('', `你们说过的话 — ${msgTotalText}`, '');
