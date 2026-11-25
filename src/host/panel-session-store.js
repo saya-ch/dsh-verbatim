@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * panel-session-store.js —— 面板会话日志定位、缓存、配置读取与向量状态聚合
  */
@@ -29,7 +30,12 @@ const LOG_CACHE_MAX = 8;
 /** 会话日志文件清单的缓存时长（792 个目录的 stat，别每个请求都扫） */
 const SESSION_FILE_TTL_MS = 30_000;
 
-/** 取整参数（缺省给默认值；范围外/非整数直接报错，不静默截断） */
+/**
+ * 取整参数（缺省给默认值；范围外/非整数直接报错，不静默截断）
+ * @param {unknown} value
+ * @param {string} name
+ * @param {{ def?: number, min?: number, max?: number }} [opts]
+ */
 export function intParam(value, name, { def, min = -Infinity, max = Infinity } = {}) {
   if (value === undefined || value === null || value === '') {
     if (def === undefined) throw new PanelError('BAD_ARG', `缺少参数 ${name}`, 400);

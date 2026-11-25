@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * panel-search.js —— 面板 `panel.search` RPC 实现
  *
@@ -187,7 +188,7 @@ export function createPanelSearch({
           minScore: NOTE_MIN_SCORE_DEFAULT,
           limit: PINNED_NOTE_MAX_DEFAULT,
         });
-        matchedNotes = nr.hits.map((n) => ({
+        matchedNotes = nr.hits.map((/** @type {any} */ n) => ({
           id: Number(n.id),
           content: String(n.content ?? ''),
           about: n.about ?? null,

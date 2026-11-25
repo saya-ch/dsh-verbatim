@@ -1,7 +1,8 @@
+// @ts-check
 /**
  * 向量库降级模式（pure-SQLite + 内存暴力余弦）管理模块。
  *
- * 当 sqlite-vec 不可用时，由本模块接管 `vec_fallback_*` 持久化表与内存 Map 缓存，
+ * 当 sqlite-vec 不可用时，由本模块接管 `vec_fallback_*` 持久化表与按类懒加载内存 Map 缓存，
  * 并保持与 vec0 一致的 L2 distance 口径。
  */
 
@@ -32,6 +33,14 @@ const LOAD_LABELS = Object.freeze({
   window: '降级表里的对话窗向量',
 });
 
+const ORPHAN_PRUNE_SQL = Object.freeze({
+  msg: `DELETE FROM ${FALLBACK_TABLES.msg} WHERE msg_id NOT IN (SELECT id FROM msg)`,
+  scene: `DELETE FROM ${FALLBACK_TABLES.scene} WHERE scene_id NOT IN (SELECT id FROM scene)`,
+  chunk: `DELETE FROM ${FALLBACK_TABLES.chunk} WHERE chunk_id NOT IN (SELECT id FROM chunk)`,
+  note: `DELETE FROM ${FALLBACK_TABLES.note} WHERE note_id NOT IN (SELECT id FROM note WHERE deleted_at IS NULL)`,
+  window: `DELETE FROM ${FALLBACK_TABLES.window} WHERE window_id NOT IN (SELECT id FROM window)`,
+});
+
 /**
  * @param {object} opts
  * @param {import('node:sqlite').DatabaseSync} opts.db
@@ -51,9 +60,18 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     window: new Map(),
   };
 
+  /** 按 kind 懒加载标记：只加载实际被用到的表，避免全库 5 表冷启动 */
+  /** @type {Record<'msg'|'scene'|'chunk'|'note'|'window', boolean>} */
+  const loadedKinds = {
+    msg: false,
+    scene: false,
+    chunk: false,
+    note: false,
+    window: false,
+  };
+
   /** 降级落盘是否真的可用（只读库 / 建表失败就关掉，但内存索引照常工作） */
   let fallbackTableReady = false;
-  let fallbackLoaded = false;
 
   function ensureTables() {
     if (hasVec || !persistFallback || fallbackTableReady) return fallbackTableReady;
@@ -91,96 +109,93 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
   }
 
   /**
-   * 首次用到降级索引时把落盘的向量读回内存，顺便清掉孤儿行
-   * （msg 被 rewind 物理删掉后，降级表没有 CASCADE，靠这步收尸）。
+   * 按 kind 懒加载落盘的降级向量，顺便清理该表的孤儿行。
+   * 未传 kind 时加载全部 5 类。
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} [kind]
    */
-  function ensureLoaded() {
-    if (fallbackLoaded || hasVec) return;
-    fallbackLoaded = true;
+  function ensureLoaded(kind) {
+    if (hasVec) return;
+    if (!kind) {
+      for (const k of KINDS) ensureLoaded(k);
+      return;
+    }
+    if (loadedKinds[kind]) return;
+    loadedKinds[kind] = true;
     if (!ensureTables()) return;
+    const optional = kind === 'chunk' || kind === 'note' || kind === 'window';
     try {
-      db.exec(`DELETE FROM ${FALLBACK_TABLES.msg} WHERE msg_id NOT IN (SELECT id FROM msg)`);
-      db.exec(`DELETE FROM ${FALLBACK_TABLES.scene} WHERE scene_id NOT IN (SELECT id FROM scene)`);
       try {
-        db.exec(`DELETE FROM ${FALLBACK_TABLES.chunk} WHERE chunk_id NOT IN (SELECT id FROM chunk)`);
-      } catch { /* 老库还没有 chunk 表 */ }
+        db.exec(ORPHAN_PRUNE_SQL[kind]);
+      } catch (err) {
+        if (!optional) throw err;
+      }
+      const col = PK_COLS[kind];
       try {
-        db.exec(`DELETE FROM ${FALLBACK_TABLES.note} WHERE note_id NOT IN (SELECT id FROM note WHERE deleted_at IS NULL)`);
-      } catch { /* 老库还没有 note 表 */ }
-      try {
-        db.exec(`DELETE FROM ${FALLBACK_TABLES.window} WHERE window_id NOT IN (SELECT id FROM window)`);
-      } catch { /* 老库还没有 window 表 */ }
-
-      for (const kind of ['msg', 'scene']) {
-        const col = PK_COLS[kind];
         for (const r of stmt(`SELECT ${col}, emb FROM ${FALLBACK_TABLES[kind]}`).all()) {
           maps[kind].set(Number(r[col]), toFloat32(r.emb, dim, LOAD_LABELS[kind]));
         }
-      }
-      for (const kind of ['chunk', 'note', 'window']) {
-        const col = PK_COLS[kind];
-        try {
-          for (const r of stmt(`SELECT ${col}, emb FROM ${FALLBACK_TABLES[kind]}`).all()) {
-            maps[kind].set(Number(r[col]), toFloat32(r.emb, dim, LOAD_LABELS[kind]));
-          }
-        } catch { /* 老库还没有对应降级表 */ }
+      } catch (err) {
+        if (!optional) throw err;
       }
     } catch (error) {
       logger.warn?.(`读取降级向量失败，改用本次进程内已索引的部分：${error?.message ?? error}`);
     }
   }
 
-  function reloadAll() {
-    for (const kind of KINDS) maps[kind].clear();
-    fallbackLoaded = false;
-    ensureLoaded();
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} [kind]
+   */
+  function reloadKind(kind) {
+    if (!kind) {
+      for (const k of KINDS) reloadKind(k);
+      return;
+    }
+    maps[kind].clear();
+    loadedKinds[kind] = false;
+    ensureLoaded(kind);
   }
 
   /**
    * 降级模式：**落盘表才是权威，内存 Map 只是缓存**。
-   * 靠大小对账来发现漂移（如 repo.deleteMsgsBySeq 直接删了持久表），一旦不等就以表为准重载。
+   * 按 kind 对账单表 COUNT(*)，避免每次检查都扫 5 张表。
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} [kind]
    */
-  function syncIfStale() {
+  function syncIfStale(kind) {
     if (hasVec || !fallbackTableReady) return;
+    if (!kind) {
+      for (const k of KINDS) {
+        if (loadedKinds[k]) syncIfStale(k);
+      }
+      return;
+    }
     try {
-      const tableMsgs = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.msg}`).get().c ?? 0);
-      const tableScenes = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.scene}`).get().c ?? 0);
-      let tableWindows = maps.window.size;
-      let tableChunks = maps.chunk.size;
-      let tableNotes = maps.note.size;
-      try {
-        tableWindows = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.window}`).get().c ?? 0);
-      } catch { /* ignore */ }
-      try {
-        tableChunks = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.chunk}`).get().c ?? 0);
-      } catch { /* ignore */ }
-      try {
-        tableNotes = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES.note}`).get().c ?? 0);
-      } catch { /* ignore */ }
-      if (
-        tableMsgs !== maps.msg.size
-        || tableScenes !== maps.scene.size
-        || tableWindows !== maps.window.size
-        || tableChunks !== maps.chunk.size
-        || tableNotes !== maps.note.size
-      ) {
-        reloadAll();
+      const tableCount = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES[kind]}`).get().c ?? 0);
+      if (tableCount !== maps[kind].size) {
+        reloadKind(kind);
       }
     } catch {
       // 表读不到就按现有内存索引继续用，别把查询搞崩
     }
   }
 
+  /** @param {'msg'|'scene'|'chunk'|'note'|'window'} kind */
   function mapOf(kind) {
+    ensureLoaded(kind);
     return maps[kind];
   }
 
+  /** @param {'msg'|'scene'|'chunk'|'note'|'window'} kind */
   function count(kind) {
-    ensureLoaded();
-    syncIfStale();
+    ensureLoaded(kind);
+    syncIfStale(kind);
     return maps[kind].size;
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {number|bigint} id
+   * @param {Float32Array} vector
+   */
   function insertUnsafe(kind, id, vector) {
     maps[kind].set(Number(id), vector);
     if (ensureTables()) {
@@ -189,6 +204,11 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     }
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {number|bigint} id
+   * @param {Float32Array} vector
+   */
   function upsertUnsafe(kind, id, vector) {
     maps[kind].set(Number(id), vector);
     if (ensureTables()) {
@@ -197,8 +217,12 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     }
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {number|bigint} id
+   */
   function deleteOne(kind, id) {
-    ensureLoaded();
+    ensureLoaded(kind);
     const existed = maps[kind].delete(Number(id));
     if (ensureTables()) {
       stmt(`DELETE FROM ${FALLBACK_TABLES[kind]} WHERE ${PK_COLS[kind]} = ?`).run(Number(id));
@@ -206,8 +230,13 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     return existed ? 1 : 0;
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {number[]} ids
+   * @param {{ countRemovedByExistence?: boolean, ignoreErrors?: boolean }} [opts]
+   */
   function deleteIds(kind, ids, { countRemovedByExistence = false, ignoreErrors = false } = {}) {
-    ensureLoaded();
+    ensureLoaded(kind);
     let removed = 0;
     withTx(db, () => {
       const tableReady = ensureTables();
@@ -225,8 +254,12 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     return removed;
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {{ ensureFirst?: boolean, ignoreErrors?: boolean }} [opts]
+   */
   function clear(kind, { ensureFirst = false, ignoreErrors = false } = {}) {
-    if (ensureFirst) ensureLoaded();
+    if (ensureFirst) ensureLoaded(kind);
     maps[kind].clear();
     if (ensureTables()) {
       try {
@@ -237,8 +270,13 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     }
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {Float32Array} query
+   * @param {number} k
+   */
   function knn(kind, query, k) {
-    ensureLoaded();
+    ensureLoaded(kind);
     const source = maps[kind];
     const out = [];
     for (const [id, vec] of source) {
@@ -249,8 +287,12 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     return out.slice(0, k);
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {number[]} ids
+   */
   function getVecs(kind, ids) {
-    ensureLoaded();
+    ensureLoaded(kind);
     const out = new Map();
     for (const id of ids) {
       const v = maps[kind].get(id);
@@ -259,9 +301,13 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     return out;
   }
 
+  /**
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {number[]} ids
+   */
   function missingIds(kind, ids) {
-    ensureLoaded();
-    syncIfStale();
+    ensureLoaded(kind);
+    syncIfStale(kind);
     return ids.filter((id) => !maps[kind].has(id));
   }
 
@@ -303,7 +349,7 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
         );
       } catch { /* 没有 window 降级表 */ }
     });
-    reloadAll();
+    reloadKind();
     return removed;
   }
 
