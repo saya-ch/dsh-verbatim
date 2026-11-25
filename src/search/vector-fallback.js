@@ -97,7 +97,7 @@ export function createFallbackVectorIndex({
     const m = maps[kind];
     if (m.has(id)) m.delete(id);
     m.set(id, vec);
-    while (m.size > cap) {
+    while (fallbackTableReady && m.size > cap) {
       cappedKinds[kind] = true;
       const oldest = m.keys().next().value;
       if (oldest === undefined) break;
