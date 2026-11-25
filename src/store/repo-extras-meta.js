@@ -1,9 +1,11 @@
+// @ts-check
 /**
  * `createExtras` 的元数据与管理子模块：note / audit / vecMeta / sceneAssign / flag。
  */
 
 export function createNoteExtras({ stmt, p, required, field, mapNote }) {
   return {
+    /** @param {{ content?: string, about?: any, at?: number, sessionId?: string|null, session_id?: string|null }} [opts] */
     insert({ content, about = null, at = Date.now(), sessionId, session_id } = {}) {
       const text = required({ content }, ['content'], 'note.insert');
       const sid = p(field({ sessionId, session_id }, 'sessionId', 'session_id') ?? null);
@@ -154,6 +156,7 @@ export function createNoteExtras({ stmt, p, required, field, mapNote }) {
 
 export function createAuditExtras({ stmt, p, required, toJsonText }) {
   return {
+    /** @param {{ action?: string, target?: string, detail?: any, at?: number }} [opts] */
     insert({ action, target, detail = null, at = Date.now() } = {}) {
       const act = required({ action }, ['action'], 'audit.insert');
       const tgt = required({ target }, ['target'], 'audit.insert');
@@ -383,6 +386,7 @@ export function createSceneAssignExtras({ db, stmt, p, withTx, deleteVecRows }) 
 
 export function createFlagExtras({ stmt, p, mapFlag }) {
   return {
+    /** @param {{ msgId?: number|bigint, reason?: any, at?: number }} [opts] */
     insert({ msgId, reason = null, at = Date.now() } = {}) {
       if (msgId === undefined || msgId === null) throw new TypeError('flag.insert: 缺少 msgId');
       const got = stmt('INSERT INTO flag (msg_id, reason, at, resolved_at) VALUES (?, ?, ?, NULL) RETURNING id')

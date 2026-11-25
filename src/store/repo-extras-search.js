@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * `createExtras` 的检索、统计与片段子模块：search / stats / chunk / media / window。
  */

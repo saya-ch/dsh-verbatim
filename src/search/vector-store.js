@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 向量索引封装 —— sqlite-vec（vec0）为主，暴力余弦为降级路径
  *
@@ -123,7 +124,7 @@ export function createVectorStore(handle, options = {}) {
   function declaredDim(table) {
     try {
       const row = db.prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(table);
-      const m = /float\[(\d+)\]/i.exec(row?.sql ?? '');
+      const m = /float\[(\d+)\]/i.exec(String(row?.sql ?? ''));
       return m ? Number(m[1]) : null;
     } catch {
       return null;
@@ -140,7 +141,7 @@ export function createVectorStore(handle, options = {}) {
     if (options.hasVec === false) return false;
     if (!tableExists('vec_msg')) return false;
     if (options.hasVec === true) return true;
-    if (handle?.hasVec) return true;
+    if (typeof handle === 'object' && handle !== null && 'hasVec' in handle && handle.hasVec) return true;
     try {
       const empty = new Uint8Array(dim * 4);
       stmt('SELECT msg_id, distance FROM vec_msg WHERE emb MATCH ? AND k = ?').all(empty, 1);
@@ -379,6 +380,17 @@ export function createVectorStore(handle, options = {}) {
    *   避免多会话大库场景下小会话被全局 Top-8k 挤掉而漏召回。
    * - 降级模式：先按 sessionId/时间在 SQLite 预过滤候选 ID，再对命中范围算 dot 排序，
    *   避免多会话大库下对无关会话全量计算点积。
+   */
+  /**
+   * @param {{
+   *   kind: 'msg'|'scene'|'chunk'|'note'|'window',
+   *   query: any,
+   *   want: number,
+   *   total: number,
+   *   filter?: { overFetch?: number, minScore?: number, [key: string]: any },
+   *   hydrate: (ids: number[], filter: any) => Map<number, any>,
+   *   buildHit: (row: any, c: { id: number, distance: number }, score: number, rank: number) => any,
+   * }} args
    */
   function runFilteredKnn({ kind, query, want, total, filter = {}, hydrate, buildHit }) {
     if (total === 0) return [];
@@ -811,7 +823,7 @@ export function createVectorStore(handle, options = {}) {
      * 场景（gist）向量检索。过滤语义与时间路一致：时间区间取**相交**。
      * @param {Float32Array|number[]|Uint8Array} query
      * @param {number} [k=5]
-     * @param {{from?: number, to?: number, sessionId?: string, overFetch?: number}} [filter]
+     * @param {{from?: number, to?: number, sessionId?: string, overFetch?: number, limit?: number}} [filter]
      */
     knnScene(query, k = 5, filter = {}) {
       const want = Math.max(1, Math.floor(filter.limit ?? k));
@@ -959,7 +971,7 @@ export function createVectorStore(handle, options = {}) {
         queryByIds(list, (slice) => {
           const rows = db.prepare(`SELECT window_id, emb FROM vec_window WHERE window_id IN (${placeholders(slice.length)})`).all(...slice.map((id) => BigInt(id)));
           for (const r of rows) {
-            if (r?.emb) out.set(Number(r.window_id), toFloat32(r.emb, dim, `window ${r.window_id} 的向量`));
+            if (r?.emb) out.set(Number(r.window_id), toFloat32(/** @type {Uint8Array} */ (r.emb), dim, `window ${r.window_id} 的向量`));
           }
         });
       } catch { /* ignore */ }

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * pipeline-scenes.js —— 场景切分、增量重切、锁定保护与自适应对话窗构建。
  */
@@ -243,6 +244,7 @@ export function rebuildScenesForSession(opts) {
   // ⑤ 邻接回填 + 把消息挂回场景。
   //    挂回用 seq 区间：场景是时间轴上的连续切片，区间取场景内实际存在的
   //    最小/最大 seq，rewind 掉的那些 seq 本来就没有行，BETWEEN 不会误伤。
+  /** @type {any[]} */
   const linked = linkScenes(scenes, { ids: sceneIds });
   let msgsAssigned = 0;
   for (let i = 0; i < linked.length; i++) {
@@ -489,6 +491,7 @@ export function syncScenesForSession(opts) {
 
   // ⑥ 稳定时间窗：末尾仍在活跃聊的未沉淀场景暂不封场（保留 scene_id = NULL）
   let pendingMsgs = 0;
+  /** @type {any[]} */
   const settled = splitList.slice();
   if (settleMs > 0 && settled.length > 0) {
     const tail = settled[settled.length - 1];
@@ -550,6 +553,7 @@ export function syncScenesForSession(opts) {
       return newId;
     });
 
+    /** @type {any[]} */
     const linkedList = linkScenes(settled, { ids: newIds });
     if (prevStable) {
       const prevMsgs = repo.msgsByScene(prevStable.id, true);
@@ -641,6 +645,10 @@ export function syncScenesForSession(opts) {
  * 陪伴型先合并连发并配对 Q&A，随后在 indexer.indexPendingWindows 嵌入完向量后
  * 直接复用内存向量按局部谷值切出 Thread 微话题对话线，零 LLM、零多余调用。
  */
+/**
+ * @param {any[]} msgs
+ * @param {{ sceneId: number|bigint, sessionId: string, isCompanion?: boolean|null }} opts
+ */
 export function buildAdaptiveWindowsForScene(msgs, { sceneId, sessionId, isCompanion = null }) {
   const valid = (msgs ?? []).filter((m) => m && Number(m.excluded) !== 1 && String(m.text ?? '').trim());
   if (valid.length < 2) return [];
@@ -650,6 +658,7 @@ export function buildAdaptiveWindowsForScene(msgs, { sceneId, sessionId, isCompa
 
   if (companion) {
     const turns = coalesceTurns(valid);
+    /** @type {any[]} */
     const exs = buildExchanges(turns);
     return exs.map((e, idx) => ({
       sceneId,
@@ -665,7 +674,7 @@ export function buildAdaptiveWindowsForScene(msgs, { sceneId, sessionId, isCompa
       text: e.text,
     }));
   }
-  return buildSceneWindows(msgs, { sceneId, sessionId });
+  return buildSceneWindows(msgs, { sceneId: Number(sceneId), sessionId });
 }
 
 function detectCompanionForSession(repo, sessionId, fallbackMsgLists = []) {
@@ -689,6 +698,7 @@ function detectCompanionForSession(repo, sessionId, fallbackMsgLists = []) {
   return totalCnt > 0 ? (totalLen / totalCnt) <= COMPANION_AVG_CHARS : null;
 }
 
+/** @param {{ repo?: any, extras?: any, sessionId?: string, force?: boolean, isCompanion?: boolean|null }} [opts] */
 export function ensureWindowsForSession({ repo, extras, sessionId, force = false, isCompanion = null } = {}) {
   if (!repo || !extras?.window?.replaceForScene || !sessionId) return { scenesScanned: 0, windowsBuilt: 0 };
   const scenes = repo.scenesByTimeRange(sessionId, 0, TIME_MAX, ALL_MSGS_LIMIT);
