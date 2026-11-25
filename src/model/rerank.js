@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Rerank 精排模型接入 —— OpenAI / SiliconFlow / Jina / vLLM 兼容 `/rerank` 接口。
  *
@@ -42,14 +43,16 @@ export function parseRerankResponse(body, docCount) {
 
 /**
  * @param {{
- *   model: string,
+ *   model?: string,
  *   baseURL?: string,
+ *   baseUrl?: string,
+ *   mode?: string,
  *   apiKey?: string,
  *   apiKeyEnv?: string,
  *   local?: boolean,
  *   timeoutMs?: number,
  *   fetchImpl?: typeof fetch,
- * }} opts
+ * }} [opts]
  */
 export function createReranker(opts = {}) {
   const model = String(opts.model ?? '').trim();
@@ -107,7 +110,7 @@ export function createReranker(opts = {}) {
           const parsed = JSON.parse(text);
           detail = parsed?.error?.message || parsed?.message || detail;
         } catch { /* ignore */ }
-        const err = new Error(`HTTP ${res.status}: ${detail}`);
+        const err = /** @type {Error & { status?: number }} */ (new Error(`HTTP ${res.status}: ${detail}`));
         err.status = res.status;
         throw err;
       }
@@ -133,7 +136,7 @@ export function createReranker(opts = {}) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (attempt > 0) {
         if (callOpts.signal?.aborted) break;
-        await new Promise((resolve, reject) => {
+        await new Promise((/** @type {(value?: void) => void} */ resolve, reject) => {
           const sig = callOpts.signal;
           const t = setTimeout(() => {
             if (sig) sig.removeEventListener('abort', onAbortSleep);

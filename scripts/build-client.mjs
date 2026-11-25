@@ -44,6 +44,29 @@ try {
   process.exit(1);
 }
 
+// 校验 01-i18n 的 en / zh 文案 Key 完全对齐（防漏翻）
+const enPart = parts.find((f) => f.includes('i18n') && f.includes('en'));
+const zhPart = parts.find((f) => f.includes('i18n') && f.includes('zh'));
+if (enPart && zhPart) {
+  const enCode = fs.readFileSync(path.join(PARTS_DIR, enPart), 'utf8');
+  const zhCode = fs.readFileSync(path.join(PARTS_DIR, zhPart), 'utf8');
+  const enBody = enCode.slice(enCode.indexOf('const en ='));
+  const i18nResult = vm.runInNewContext(
+    `(function(){ ${enBody}\n${zhCode}\nreturn { en: Object.keys(en), zh: Object.keys(zh) }; })()`,
+    {},
+    { filename: 'i18n-check.js' },
+  );
+  const enSet = new Set(i18nResult.en);
+  const zhSet = new Set(i18nResult.zh);
+  const missingInZh = i18nResult.en.filter((k) => !zhSet.has(k));
+  const missingInEn = i18nResult.zh.filter((k) => !enSet.has(k));
+  if (missingInZh.length > 0 || missingInEn.length > 0) {
+    if (missingInZh.length) console.error(`[build-client] zh 缺少 i18n key: ${missingInZh.join(', ')}`);
+    if (missingInEn.length) console.error(`[build-client] en 缺少 i18n key: ${missingInEn.join(', ')}`);
+    process.exit(1);
+  }
+}
+
 if (process.argv.includes('--check')) {
   const current = fs.existsSync(OUT_FILE) ? fs.readFileSync(OUT_FILE, 'utf8') : '';
   if (current !== built) {

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 笔记检索与相关性打分（关键词 + vec_note 语义融合 + 分数门槛）。
  *
@@ -118,13 +119,13 @@ async function ensureNoteVectors({ store, provider, pool }) {
  * 对当前会话的笔记做「关键词 + 语义」融合检索，并按分数门槛过滤。
  *
  * @param {{
- *   extras: object,
+ *   extras: any,
  *   sessionId: string|null,
  *   query: string,
  *   from?: number|null,
  *   to?: number|null,
- *   provider?: object|null,
- *   store?: object|null,
+ *   provider?: any,
+ *   store?: any,
  *   queryVec?: Float32Array|number[]|null,
  *   minScore?: number,
  *   limit?: number,

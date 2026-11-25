@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 后台重建任务与安全闸门（incremental / vector / scene / gist / derive）。
  */
@@ -460,7 +461,7 @@ export function createRebuildManager({
       try {
         ensureWindowsForSession({ repo, extras, sessionId, force: true });
       } catch { /* ignore */ }
-      const r = await indexer.rebuild({ force: true, scenes, notes });
+      const r = await /** @type {any} */ (indexer).rebuild({ force: true, scenes, notes });
       return { scope, sessionId, synced, ...r };
     }
 
@@ -489,7 +490,7 @@ export function createRebuildManager({
     } else {
       llmSkip = '对话模型未启用或未配置，保留零成本抽取式摘要';
     }
-    const r = await rebuildDerived({
+    const r = await /** @type {any} */ (rebuildDerived)({
       handle,
       sessionId,
       llm,

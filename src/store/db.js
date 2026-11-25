@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 打开记忆库 —— 建库、装扩展、幂等建表
  *
@@ -84,7 +85,7 @@ export function defaultVecDllPath(dshHome) {
  * 找 vec0 扩展的「源文件」候选。只负责找，不负责复制。
  * 顺序：显式指定 → 环境变量 → 扩展落地路径 → 包内自带 → node_modules 里的平台包。
  *
- * @param {{ vecDll?: string, dshHome?: string }} [opts]
+ * @param {{ vecDll?: string, dshHome?: string, forceCopy?: boolean }} [opts]
  * @returns {string|null}
  */
 export function findVecSource(opts = {}) {
@@ -146,7 +147,7 @@ export function findVecSource(opts = {}) {
  * 为什么必须复制：DSH 是 asar 打包，虚拟文件系统里的 .dll 不能 loadExtension。
  * 目标已存在且非空就复用（避免每次启动都写盘）。
  *
- * @param {{ vecDll?: string, dshHome?: string }} [opts]
+ * @param {{ vecDll?: string, dshHome?: string, forceCopy?: boolean }} [opts]
  * @returns {string|null}
  */
 export function ensureVecDll(opts = {}) {
@@ -559,11 +560,12 @@ function rebuildWithAutoincrement(db, table, warnings = []) {
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get(table);
   if (!row?.sql) return false; // 新库还没有这张表：schema.sql 建出来的已经是新结构
-  if (/\bAUTOINCREMENT\b/i.test(row.sql)) return false; // 已经改过了
+  const rowSql = String(row.sql);
+  if (/\bAUTOINCREMENT\b/i.test(rowSql)) return false; // 已经改过了
 
   // 从现存的 DDL 派生新表：表名换掉，只给 id 那一行加 AUTOINCREMENT
   const newTable = `${table}__v5`;
-  let ddl = row.sql
+  let ddl = rowSql
     .replace(/^CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?/i, 'CREATE TABLE ')
     .replace(new RegExp(`^CREATE\\s+TABLE\\s+(\`|"|\\[)?${table}(\`|"|\\])?`, 'i'), `CREATE TABLE ${newTable}`);
   ddl = ddl.replace(/^(\s*)id\s+INTEGER\s+PRIMARY\s+KEY\b/im, '$1id INTEGER PRIMARY KEY AUTOINCREMENT');
@@ -645,8 +647,7 @@ export function migrate(db, opts = {}) {
  *   dshHome?: string,
  *   vecDll?: string,       // 显式指定 vec0 文件（测试用）
  *   loadVec?: boolean,     // false = 明确不要向量表（纯 FTS 环境）
- *   vecDim?: number,       // vec0 表维度（默认 1024）。**只对新建库生效**：
- *                          // 已有库的表维度是建表时定死的，传别的值会被 vector-store 拦下。
+ *   vecDim?: number,       // vec0 表维度（默认 1024）
  *   readOnly?: boolean,
  *   logger?: { warn(msg: string): void },
  * }} [opts]

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * scope.js —— 工具层的会话隔离（A1 / D-014）
  *
@@ -46,8 +47,8 @@ export function normalizeSessionId(raw) {
 /**
  * 解析当前工具实例应该按哪个会话过滤。
  *
- * @param {object} [injected] 工具工厂的依赖（`createXxxTool({ sessionId })`）
- * @param {object} [ctx] 调用期上下文（handler 的第二个参数，宿主注入）
+ * @param {Record<string, any>} [injected] 工具工厂的依赖（`createXxxTool({ sessionId })`）
+ * @param {Record<string, any>} [ctx] 调用期上下文（handler 的第二个参数，宿主注入）
  * @returns {string|null} null = 单库模式（不过滤）
  */
 export function resolveSessionId(injected = {}, ctx = {}) {
@@ -75,9 +76,9 @@ export function inSession(row, sessionId) {
  * 必须自己过一道会话，否则 A 会话能凭编号读到 B 会话的原文（存在性泄露，
  * 更糟的是 memory_forget 会拿它做跨会话判定）。
  *
- * @param {object[]} rows
+ * @param {Record<string, any>[]} rows
  * @param {string|null} sessionId
- * @returns {object[]}
+ * @returns {Record<string, any>[]}
  */
 export function pickInSession(rows, sessionId) {
   if (!Array.isArray(rows)) return [];
@@ -91,10 +92,9 @@ export function pickInSession(rows, sessionId) {
  * （A1 的判定是「结果里没有 B 的 seq」，而条数同样能反推出 B 的存在）。
  * 老库/老 extras 没有 `stats.get` 时返回空对象，工具照样能跑。
  *
- * @param {object} extras createExtras() 的返回值
+ * @param {Record<string, any>} extras createExtras() 的返回值
  * @param {string|null} sessionId
  * @returns {Record<string, any>}
- * @returns {object}
  */
 export function sessionStats(extras, sessionId) {
   try {

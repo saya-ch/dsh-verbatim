@@ -1,3 +1,4 @@
+// @ts-check
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -213,8 +214,8 @@ export function fmtRange(startAt, endAt) {
   let b = Number(endAt);
   if (!Number.isFinite(a)) return '（时间缺失）';
   if (!Number.isFinite(b) || b < a) b = a;
-  const pa = shanghaiParts(a);
-  const pb = shanghaiParts(b);
+  const pa = shanghaiParts(a, undefined);
+  const pb = shanghaiParts(b, undefined);
   const sameDay = pa.y === pb.y && pa.mo === pb.mo && pa.d === pb.d;
   if (!sameDay && b - a >= 6 * 60 * 60 * 1000) {
     return `${fmtStamp(a)}–${fmtDate(b)} ${fmtTime(b)}`;
@@ -228,7 +229,7 @@ export function fmtRange(startAt, endAt) {
  * @returns {string}
  */
 export function fmtPhase(ts) {
-  const { h } = shanghaiParts(ts);
+  const { h } = shanghaiParts(ts, undefined);
   if (h < 2 || h === 23) return '深夜';
   if (h < 5) return '凌晨';
   if (h < 8) return '清晨';
@@ -478,7 +479,7 @@ export function leadInHeader(prevRange) {
  * stats.msgs / chars 是**入库总量**（含被排除的），
  * 所以「能查到多少」要用 msgs - excludedMsgs（D-170 / T1 接口语义）。
  *
- * @param {{msgs?:number, scenes?:number, excludedMsgs?:number, firstAt?:number|null,
+ * @param {{msgs?:number, scenes?:number, notes?:number, excludedMsgs?:number, firstAt?:number|null,
  *          lastAt?:number|null}} stats
  * @returns {string}
  */
@@ -489,7 +490,7 @@ export function libraryLine(stats = {}) {
   const excluded = Number(stats?.excludedMsgs ?? 0);
   const usable = Math.max(0, total - excluded);
   const scenes = Number(stats?.scenes ?? 0);
-  const span = fmtSpan(stats?.firstAt, stats?.lastAt);
+  const span = fmtSpan(stats?.firstAt, stats?.lastAt, undefined);
   let line = `库里有${span ? ` ${span} 的` : ''} ${fmtCount(usable)} 条可检索的消息、${fmtCount(scenes)} 个场景`;
   if (excluded > 0) line += `（另有 ${fmtCount(excluded)} 条按日期排除，检索不到）`;
   if (notes > 0) line += `，还有 ${fmtCount(notes)} 条你自己记的笔记`;

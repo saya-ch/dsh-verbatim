@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * dsh-verbatim —— 一字不改的长期记忆。
  *
@@ -56,7 +57,7 @@ export { buildScenes, linkScenes, assignPlan } from './scene/link.js';
 
 /* ─────────────────────────── 检索 ─────────────────────────── */
 
-export { createSearcher, searchWithRRF, fuseRRF, RRF_K, DEFAULT_MIN_KEYWORD_HITS } from './search/rrf.js';
+export { createSearcher, searchWithRRF, fuseRRF, RRF_K } from './search/rrf.js';
 export { createIndexer } from './search/indexer.js';
 export { createVectorStore } from './search/vector-store.js';
 
