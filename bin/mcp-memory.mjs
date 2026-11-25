@@ -271,6 +271,7 @@ async function handleRequest(msg) {
     }
 
     default:
+      if (id === undefined) return undefined;
       return replyError(id, -32601, `不支持的方法：${method}`);
   }
 }

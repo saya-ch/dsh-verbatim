@@ -96,8 +96,10 @@
               const a = document.createElement('a');
               a.href = url;
               a.download = `verbatim-${sid.slice(0, 16)}.json`;
+              document.body.appendChild(a);
               a.click();
-              URL.revokeObjectURL(url);
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
             } catch (e) {
               setFlash({ kind: 'err', text: msgOf(e) });
             } finally {
@@ -146,8 +148,10 @@
               const a = document.createElement('a');
               a.href = url;
               a.download = `verbatim-${sid.slice(0, 16)}.md`;
+              document.body.appendChild(a);
               a.click();
-              URL.revokeObjectURL(url);
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
             } catch (e) {
               setFlash({ kind: 'err', text: msgOf(e) });
             } finally {

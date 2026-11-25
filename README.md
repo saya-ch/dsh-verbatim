@@ -30,7 +30,7 @@
 
 > `dsh-verbatim` 是面向 AI 陪伴场景的 DeepSeek Harness 社区插件（同时提供 CLI 与 MCP Server），不修改 DeepSeek Harness 源码。
 >
-> **当前版本：0.1.0**。基于 Node.js `>=24` 内置 `node:sqlite` 与 FTS5，所有对话原文、索引与设置均保存在本机 `$DSH_HOME/verbatim/`，无外部记忆托管服务。
+> **当前版本：0.1.1**。基于 Node.js `>=24` 内置 `node:sqlite` 与 FTS5，所有对话原文、索引与设置均保存在本机 `$DSH_HOME/verbatim/`，无外部记忆托管服务。
 
 `dsh-verbatim` 把每一次对话的原话一字不改地留存在本地 SQLite 中，按问答与微话题自动组织结构；当上下文被压缩或时间跨度拉长后，模型仍可通过关键词、向量语义与可选精排找回完整原话与当时语境。
 
@@ -38,10 +38,10 @@
 
 - **原文一字不改，派生层随时可重建**：`msg` 表作为单一事实来源只增不改（撤回消息会物理删除原文与对应向量）；即使经历多次上下文压缩，过往对话依然完整留存。
 - **陪伴优先的双粒度组织（`exchange` → `thread`）**：面向日常闲聊自动切分单轮问答与微话题，配合 30 分钟静默成场、场景合并/拆分锁定与时间线聚簇折叠，召回连贯而不碎片。
-- **始终混合检索 + 可选精排**：并行执行 FTS5 trigram / 2 字中文 `LIKE` 与多粒度向量检索（`vec_msg` / `vec_chunk` / `vec_scene` / `vec_note`），经 RRF 融合排序，并支持 `/rerank` 二次精排（异常自动回退）。
+- **始终混合检索 + 可选精排**：并行执行 FTS5 trigram / 2 字中文 bigram（`msg_cjk2_fts`）与多粒度向量检索（`vec_msg` / `vec_chunk` / `vec_scene` / `vec_note`），经 RRF 融合排序，并支持 `/rerank` 二次精排（异常自动回退）。
 - **图片附件与备注回想**：入库记录对话中的图片附件与本地解析路径，支持在侧栏内联预览与编辑图片备注（`caption`），检索结果会一并把图片路径与备注交还给模型。
 - **严格会话隔离与隐私边界**：开关与数据按 `session_id` 独立隔离；用户设置的「私密排除时段」与单句「暂不回想」对 Agent 工具完全不可见，杜绝任何参数绕过。
-- **Material 3 陪伴向前端**：提供 **6 个侧栏视图**（概览、搜索、时间轴、笔记、核对、库）与 **5 个全局设置页**（含 3 步快速上手引导、本地模型服务探测、会话数据管理与只读 SQL 诊断）。
+- **Material 3 陪伴向前端**：提供 **6 个侧栏视图**（概览、搜索、时间轴、笔记、核对、库）与 **5 个全局设置页**（含 3 步快速上手引导、本地模型服务探测、会话数据管理、自定义称呼标签 `aboutLabels` 与带超时熔断的只读 SQL 诊断）。
 
 ## 检索返回示例
 
@@ -88,14 +88,14 @@ npm install --no-audit --no-fund
 
 在 DeepSeek Harness 源码目录中可使用 `pnpm dsh plugin --profile web add dsh-verbatim@latest` 或指向本仓库目录挂载（仓库已包含 [cordis.patch.yml](cordis.patch.yml) 与 [package.json](package.json) 声明）。
 
-如果你希望脱离插件界面单独导入、检索或作为标准 MCP Server（stdio）挂载到其他客户端：
+如果希望脱离插件界面单独使用 CLI 或作为标准 MCP Server（stdio）挂载到其他客户端，全局安装或源码下均可直接运行：
 
 ```powershell
 # CLI 工具（导入、检索、统计、校验）
-node bin/cli.mjs --help
+dsh-verbatim --help          # 或 node bin/cli.mjs --help
 
 # 启动标准 MCP Server（stdio）
-node bin/mcp-memory.mjs
+dsh-verbatim-mcp             # 或 node bin/mcp-memory.mjs
 ```
 
 </details>
@@ -135,7 +135,7 @@ flowchart LR
 ## 兼容性
 
 - **Node.js**：要求 `>=24`（依赖内置 `node:sqlite`）。
-- **`sqlite-vec`**：作为 `optionalDependencies` 安装；若当前平台未加载成功，系统会自动降级为纯 SQLite 余弦检索，功能与召回结果等价，仅在大库全量扫描时略慢。
+- **`sqlite-vec`**：作为 `optionalDependencies` 安装；若当前平台未加载成功，系统会自动降级为带 LRU 上界流式扫描的 SQLite 余弦检索，功能与召回结果等价，同时控制大库内存占用。
 
 ## 卸载
 

@@ -137,7 +137,8 @@ export function createIndexer(opts = /** @type {any} */ ({})) {
         return await provider.embed(texts, o.signal);
       } catch (e) {
         lastErr = e;
-        // 永久错误（没 key / 模型不匹配）重试没意义
+        // 取消或永久错误（没 key / 模型不匹配）重试没意义
+        if (e?.name === 'AbortError' || o.signal?.aborted) throw e;
         if (e?.permanent === true || /缺少.*API Key|模型不一致/.test(String(e?.message))) throw e;
       }
     }
@@ -291,9 +292,12 @@ export function createIndexer(opts = /** @type {any} */ ({})) {
     /** @type {{chunkId: number, text: string}[]} */
     const pieces = [];
     if (plan.length > 0) {
+      const oldChunkIds = [];
       withTx(db, () => {
         for (const { msg, parts } of plan) {
-          // 重建时先清旧分片，避免 idx 残留
+          // 重建时先清旧分片（含旧 vec_chunk），避免 idx 残留和孤儿向量
+          const prevRows = db.prepare('SELECT id FROM chunk WHERE msg_id = ?').all(Number(msg.id));
+          for (const r of prevRows) oldChunkIds.push(Number(r.id));
           db.prepare('DELETE FROM chunk WHERE msg_id = ?').run(Number(msg.id));
           for (const p of parts) {
             const r = db
@@ -306,6 +310,7 @@ export function createIndexer(opts = /** @type {any} */ ({})) {
           }
         }
       });
+      if (oldChunkIds.length > 0) store.deleteChunkVecs(oldChunkIds);
     }
 
     // ② 分片向量
@@ -576,6 +581,7 @@ export function createIndexer(opts = /** @type {any} */ ({})) {
         warnings: [],
       };
       if (list.length === 0) return result;
+      indexer.assertModel();
 
       const withGist = [];
       for (const s of list) {
@@ -643,6 +649,7 @@ export function createIndexer(opts = /** @type {any} */ ({})) {
       const list = (notes ?? []).filter((n) => n && Number.isSafeInteger(Number(n.id)));
       const result = { indexed: 0, skipped: 0, reason: null };
       if (list.length === 0 || typeof store.upsertNoteVecs !== 'function') return result;
+      indexer.assertModel();
 
       const valid = [];
       for (const n of list) {
@@ -677,12 +684,16 @@ export function createIndexer(opts = /** @type {any} */ ({})) {
       if (typeof store.upsertWindowVecs !== 'function' || !extras?.window?.pending) {
         return { indexed: 0, batches: 0, totalPending: 0 };
       }
+      indexer.assertModel();
       const report = typeof o.onProgress === 'function' ? o.onProgress : onProgress;
       const budget = Number.isFinite(o.limit) ? Math.max(0, Math.floor(o.limit)) : Infinity;
-      const totalPending = typeof extras.window.countPending === 'function'
+      const hasCountPending = typeof extras.window.countPending === 'function';
+      const totalPending = hasCountPending
         ? extras.window.countPending({ sessionId: o.sessionId })
         : 0;
-      const targetTotal = Number.isFinite(budget) ? Math.min(totalPending, budget) : totalPending;
+      const targetTotal = hasCountPending
+        ? (Number.isFinite(budget) ? Math.min(totalPending, budget) : totalPending)
+        : budget;
       if (targetTotal === 0) return { indexed: 0, batches: 0, totalPending: 0 };
 
       let indexed = 0;

@@ -276,32 +276,47 @@
           const [loading, setLoading] = useState(false);
           const [testRes, setTestRes] = useState(null);
           const [testing, setTesting] = useState(false);
+          const alive = useRef(true);
+          const loadSeq = useRef(0);
+          const testSeq = useRef(0);
+
+          useEffect(() => () => { alive.current = false; }, []);
 
           const loadModels = useCallback(async () => {
+            const seq = (loadSeq.current += 1);
             setLoading(true);
             try {
               const r = await callRpc('probeLocal', { listModels: { kind: 'llm' } }, 'write');
+              if (!alive.current || seq !== loadSeq.current) return;
               setListState(r);
             } catch (e) {
+              if (!alive.current || seq !== loadSeq.current) return;
               setListState({ ok: false, models: [], error: msgOf(e) });
             } finally {
-              setLoading(false);
+              if (alive.current && seq === loadSeq.current) setLoading(false);
             }
           }, []);
 
           useEffect(() => { void loadModels(); }, [loadModels]);
-          useEffect(() => { setTestRes(null); }, [provider, model]);
+          useEffect(() => {
+            testSeq.current += 1;
+            setTestRes(null);
+            setTesting(false);
+          }, [provider, model]);
 
           const runTest = async () => {
+            const seq = (testSeq.current += 1);
             setTesting(true);
             setTestRes(null);
             try {
               const r = await callRpc('probeLocal', { test: { kind: 'llm', provider, model } }, 'write');
+              if (!alive.current || seq !== testSeq.current) return;
               setTestRes(r);
             } catch (e) {
+              if (!alive.current || seq !== testSeq.current) return;
               setTestRes({ ok: false, error: msgOf(e) });
             } finally {
-              setTesting(false);
+              if (alive.current && seq === testSeq.current) setTesting(false);
             }
           };
 

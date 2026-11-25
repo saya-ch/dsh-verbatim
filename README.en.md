@@ -30,7 +30,7 @@
 
 > `dsh-verbatim` is a community plugin for DeepSeek Harness (also providing a CLI and stdio MCP Server) built for AI companion conversations, without modifying DeepSeek Harness source files.
 >
-> **Current version: 0.1.0**. Powered by Node.js `>=24` built-in `node:sqlite` and FTS5. All verbatim messages, derived indexes, and settings stay local in `$DSH_HOME/verbatim/`.
+> **Current version: 0.1.1**. Powered by Node.js `>=24` built-in `node:sqlite` and FTS5. All verbatim messages, derived indexes, and settings stay local in `$DSH_HOME/verbatim/`.
 
 `dsh-verbatim` keeps every conversation message word for word in a local SQLite database, automatically organizes exchanges and micro-topics, and brings back full original context through hybrid keyword + vector retrieval and optional reranking even after context compaction.
 
@@ -38,10 +38,10 @@
 
 - **Verbatim source of truth, rebuildable derived layers**: The `msg` table is append-only (rewinds/deletes physically remove the message and its vectors); past conversations remain intact after context compaction.
 - **Companion-first dual granularity (`exchange` → `thread`)**: Automatically segments natural chats into single exchanges and micro-topics, with 30-minute idle scene boundaries, scene merge/split locking, and timeline cluster folding.
-- **Always-hybrid retrieval + optional reranking**: Runs FTS5 trigram / 2-character CJK `LIKE` in parallel with multi-granularity vector search (`vec_msg`, `vec_chunk`, `vec_scene`, `vec_note`), fused via RRF with optional `/rerank` rescoring (and automatic fallback).
+- **Always-hybrid retrieval + optional reranking**: Runs FTS5 trigram / 2-character CJK bigram (`msg_cjk2_fts`) in parallel with multi-granularity vector search (`vec_msg`, `vec_chunk`, `vec_scene`, `vec_note`), fused via RRF with optional `/rerank` rescoring (and automatic fallback).
 - **Image attachments & captions**: Records image attachments and resolved local paths, supports inline preview and caption editing in the sidebar panel, and returns both paths and captions to the model.
 - **Strict session isolation & privacy boundaries**: Settings and data are isolated per `session_id`; user-configured private exclude time ranges and per-message "do not recall" flags are completely invisible to Agent tools and cannot be bypassed via parameters.
-- **Material 3 companion UI**: Includes **6 sidebar views** (Overview, Search, Timeline, Notes, Audit, Library) and **5 global settings tabs** (3-step setup guide, local model probing, session data management, and read-only SQL diagnostics).
+- **Material 3 companion UI**: Includes **6 sidebar views** (Overview, Search, Timeline, Notes, Audit, Library) and **5 global settings tabs** (3-step setup guide, local model probing, session data management, customizable note `aboutLabels`, and timeout-guarded read-only SQL diagnostics).
 
 ## Retrieval Example
 
@@ -88,14 +88,14 @@ npm install --no-audit --no-fund
 
 In a DeepSeek Harness source checkout, you can run `pnpm dsh plugin --profile web add dsh-verbatim@latest` or point directly to this repository (which includes [cordis.patch.yml](cordis.patch.yml) and [package.json](package.json) manifests).
 
-You can also use the CLI or run a standard stdio MCP Server standalone:
+You can also use the CLI or run a standard stdio MCP Server standalone (either via global bin or from source):
 
 ```powershell
 # CLI tool (ingest, search, stats, verify)
-node bin/cli.mjs --help
+dsh-verbatim --help          # or node bin/cli.mjs --help
 
 # Start stdio MCP Server
-node bin/mcp-memory.mjs
+dsh-verbatim-mcp             # or node bin/mcp-memory.mjs
 ```
 
 </details>
@@ -135,7 +135,7 @@ The plugin registers the ingest pipeline, search service, and 3 Agent tools (`me
 ## Compatibility
 
 - **Node.js**: Requires `>=24` (relies on built-in `node:sqlite`).
-- **`sqlite-vec`**: Listed in `optionalDependencies`. If unavailable on the host platform, vector search automatically falls back to pure-SQLite cosine similarity with equivalent recall results.
+- **`sqlite-vec`**: Listed in `optionalDependencies`. If unavailable on the host platform, vector search automatically falls back to a bounded LRU + streaming SQLite cosine similarity index with equivalent recall results and bounded memory usage.
 
 ## Uninstall
 

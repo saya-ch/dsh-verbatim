@@ -353,9 +353,9 @@
                   if (next) {
                     setRecallBusy(true);
                     void rpcRead('recallLog', { sessionId, limit: 15 })
-                      .then((res) => { setRecallItems(Array.isArray(res?.items) ? res.items : []); })
-                      .catch((e) => { setFlash({ kind: 'err', text: msgOf(e) }); })
-                      .finally(() => { setRecallBusy(false); });
+                      .then((res) => { if (alive.current) setRecallItems(Array.isArray(res?.items) ? res.items : []); })
+                      .catch((e) => { if (alive.current) setFlash({ kind: 'err', text: msgOf(e) }); })
+                      .finally(() => { if (alive.current) setRecallBusy(false); });
                   }
                 },
               }, `${recallOpen ? '▾' : '▸'} ${t('search.recallToggle')}`),
@@ -367,9 +367,9 @@
                   onClick: () => {
                     setRecallBusy(true);
                     void rpcRead('recallLog', { sessionId, limit: 15 })
-                      .then((res) => { setRecallItems(Array.isArray(res?.items) ? res.items : []); })
-                      .catch((e) => { setFlash({ kind: 'err', text: msgOf(e) }); })
-                      .finally(() => { setRecallBusy(false); });
+                      .then((res) => { if (alive.current) setRecallItems(Array.isArray(res?.items) ? res.items : []); })
+                      .catch((e) => { if (alive.current) setFlash({ kind: 'err', text: msgOf(e) }); })
+                      .finally(() => { if (alive.current) setRecallBusy(false); });
                   },
                 }, t('common.refresh'))
                 : null),

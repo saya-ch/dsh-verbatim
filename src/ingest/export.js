@@ -661,6 +661,8 @@ export function exportMessages(events, opts = {}) {
           for (let i = visible.length - 1; i >= 0; i--) {
             if (visible[i].seq >= r.start) {
               const [gone] = visible.splice(i, 1);
+              if (gone.speaker === 'user') stats.userMessages--;
+              else if (gone.speaker === 'assistant') stats.assistantMessages--;
               stats.rewoundCount++;
               stats.rewoundChars += gone.text.length;
               if (includeRewound) rewound.push({ ...gone, rewound_by_seq: ev.seq });
@@ -897,6 +899,13 @@ export function exportMessages(events, opts = {}) {
 
   const times = messages.map((m) => m.at).filter((t) => typeof t === 'number');
 
+  let timeMin = times.length ? times[0] : null;
+  let timeMax = times.length ? times[0] : null;
+  for (let i = 1; i < times.length; i++) {
+    if (times[i] < timeMin) timeMin = times[i];
+    if (times[i] > timeMax) timeMax = times[i];
+  }
+
   return {
     messages,
     rewound,
@@ -913,8 +922,8 @@ export function exportMessages(events, opts = {}) {
       // 这个比例是整个项目的价值定位依据
       inSurface0CharRatio: totalChars > 0 ? shadowedMsgChars / totalChars : 0,
       inSurface0MsgRatio: messages.length > 0 ? shadowedMsgCount / messages.length : 0,
-      timeMin: times.length ? Math.min(...times) : null,
-      timeMax: times.length ? Math.max(...times) : null,
+      timeMin,
+      timeMax,
       // 软排除汇总（与 in_surface 正交：一个消息可以既被压缩又被排除）
       excludedCharRatio: totalChars > 0 ? stats.excludedChars / totalChars : 0,
       excludedMsgRatio: messages.length > 0 ? stats.excludedCount / messages.length : 0,

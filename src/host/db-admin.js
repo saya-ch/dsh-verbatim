@@ -659,7 +659,9 @@ export function createDbAdmin({
         );
         for (const n of rawNotes) {
           if (!n || typeof n.content !== 'string' || !n.content.trim()) continue;
-          const at = Number.isFinite(Number(n.at)) ? Math.trunc(Number(n.at)) : Date.now();
+          const at = n.at !== null && n.at !== undefined && n.at !== '' && Number.isFinite(Number(n.at))
+            ? Math.trunc(Number(n.at))
+            : Date.now();
           const key = `${at}:${n.content.trim()}`;
           if (existingNoteSet.has(key)) continue;
           const about = ['me', 'him', 'us'].includes(n.about) ? n.about : null;

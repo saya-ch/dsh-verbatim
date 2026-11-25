@@ -2,6 +2,20 @@
 
 All notable changes to `dsh-verbatim` are documented here.
 
+## [0.1.1] - 2026-11-25
+
+### Performance & Indexing
+- **CJK 2-Char FTS5 Bigram Index (`msg_cjk2_fts`)**: Added schema v17 FTS5 bigram index for 2-character CJK queries so short Chinese searches avoid full-table `LIKE` scans.
+- **Bounded LRU Streaming Fallback Vectors**: Added per-kind lazy loading and LRU eviction backed by SQLite streaming (`vec_fallback_*`) when `sqlite-vec` is unavailable, preventing unbounded memory growth.
+- **Chunked SQLite Batch Operations**: Chunked `media.byMsgIds` and `window.clearForScenes` to stay safely within `SQLITE_MAX_VARIABLE_NUMBER`.
+
+### Reliability, Security & Bug Fixes
+- **Read-Only SQL Timeout Fuse & RPC Hygiene**: Added execution time bounds to `dbQuery`, fixed `readRequestBody` stream error handling, and suppressed JSON-RPC replies to MCP notifications.
+- **Ingest & Store Hardening**: Fixed SQLite handle leaks on error in `importSession` / `rebuildDerived`, stack overflow in `Math.min(...times)` on large sessions, rewind speaker counters, and atomic note restore + audit logging.
+- **Indexer, Search & Scene Consistency**: Fixed `mergeScene` cascade-deleting windows before vector cleanup, `mergeNotes` stale note vectors, `refineSessionGists` excluded message filtering, chunker infinite-loop/oversized-chunk guards, `AbortError` retry short-circuiting, and `02-29` leap-day parsing.
+- **Client UI & Build**: Enabled project-wide `checkJs` + client scope checks, fixed task polling concurrency races, unmount/sequence guards in `DshLlmPicker` and timeline/search loaders, expanded scene refresh after edits, and reliable blob downloads.
+- **Configurable `aboutLabels`**: Added customizable `me` / `him` / `us` note ownership labels.
+
 ## [0.1.0] - 2026-11-23
 
 ### Companion-First Memory & Retrieval

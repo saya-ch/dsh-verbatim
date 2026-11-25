@@ -157,7 +157,7 @@ function readRequestBody(req) {
         finish(null);
       }
     });
-    req.on('error', () => finish({}));
+    req.on('error', () => finish(null));
   });
 }
 

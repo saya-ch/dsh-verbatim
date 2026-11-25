@@ -256,7 +256,26 @@ export async function forgetNote(args = {}, ctx = {}) {
         ].join('\n'),
       };
     }
-    const restored = safeCall(() => extras.note.restore(note.id, { sessionId }), false);
+    let restored = false;
+    try {
+      restored = runInTx(db, () => {
+        const ok = safeCall(() => extras.note.restore(note.id, { sessionId }), false);
+        if (!ok) return false;
+        extras.audit.insert({
+          action: AUDIT_ACTION.restore,
+          target: `note:${note.id}`,
+          detail: {
+            reason: args.reason ?? null,
+            deletedAt: note.deletedAt,
+            at: now,
+          },
+          at: now,
+        });
+        return true;
+      });
+    } catch {
+      restored = false;
+    }
     if (!restored) {
       return {
         ok: false,
@@ -265,22 +284,6 @@ export async function forgetNote(args = {}, ctx = {}) {
         text: `#${note.id} 没能恢复（可能刚好被清理掉了）。它现在仍然不在你的笔记里。`,
       };
     }
-    safeCall(
-      () =>
-        runInTx(db, () =>
-          extras.audit.insert({
-            action: AUDIT_ACTION.restore,
-            target: `note:${note.id}`,
-            detail: {
-              reason: args.reason ?? null,
-              deletedAt: note.deletedAt,
-              at: now,
-            },
-            at: now,
-          }),
-        ),
-      null,
-    );
     return {
       ok: true,
       action: 'restore',

@@ -5020,6 +5020,8 @@ window.__ModuleLoader__.load({
         }
         let taskId = initialTaskId;
         pollingTaskRef.current = taskId;
+        const mine = (listSeq.current.task = (listSeq.current.task || 0) + 1);
+        const staleTask = () => !alive.current || settled || mine !== listSeq.current.task;
 
         setRebuild({
           phase: 'running',
@@ -5061,14 +5063,14 @@ window.__ModuleLoader__.load({
         let fullSamples = 0;
 
         const tick = async () => {
-          if (!alive.current || settled) return;
+          if (staleTask()) return;
           let terminal = null;
           let resolvedScope = scope;
 
           if (taskId !== null) {
             try {
               const task = await rpcRead('task', { taskId });
-              if (!alive.current || settled) return;
+              if (staleTask()) return;
               resolvedScope = pickStr(task && task.scope) ?? scope;
               const state = String(task && task.state ? task.state : '');
               const prog = normalizeTaskProgress(task && task.progress);
@@ -5099,7 +5101,7 @@ window.__ModuleLoader__.load({
           } else {
             try {
               const raw = await rpcRead('status', { sessionId });
-              if (!alive.current || settled) return;
+              if (staleTask()) return;
               const next = normalizeStatus(raw);
               setStatus(next);
               const indexed = next.vector.indexed;
@@ -5125,7 +5127,7 @@ window.__ModuleLoader__.load({
             }
           }
 
-          if (!alive.current || settled) return;
+          if (staleTask()) return;
           if (terminal !== null) {
             settled = true;
             pollingTaskRef.current = null;
@@ -5937,11 +5939,13 @@ window.__ModuleLoader__.load({
           setMediaPreviews((prev) => ({ ...prev, [key]: { loading: true } }));
           try {
             const res = await rpcRead('mediaPreview', { id: md.id, sessionId });
+            if (!alive.current) return;
             setMediaPreviews((prev) => ({
               ...prev,
               [key]: res && res.ok ? { ok: true, src: res.dataUrl || res.url } : { ok: false, reason: res?.reason || '无法预览' },
             }));
           } catch (e) {
+            if (!alive.current) return;
             setMediaPreviews((prev) => ({ ...prev, [key]: { ok: false, reason: msgOf(e) } }));
           }
         };
@@ -6604,9 +6608,9 @@ window.__ModuleLoader__.load({
                   if (next) {
                     setRecallBusy(true);
                     void rpcRead('recallLog', { sessionId, limit: 15 })
-                      .then((res) => { setRecallItems(Array.isArray(res?.items) ? res.items : []); })
-                      .catch((e) => { setFlash({ kind: 'err', text: msgOf(e) }); })
-                      .finally(() => { setRecallBusy(false); });
+                      .then((res) => { if (alive.current) setRecallItems(Array.isArray(res?.items) ? res.items : []); })
+                      .catch((e) => { if (alive.current) setFlash({ kind: 'err', text: msgOf(e) }); })
+                      .finally(() => { if (alive.current) setRecallBusy(false); });
                   }
                 },
               }, `${recallOpen ? '▾' : '▸'} ${t('search.recallToggle')}`),
@@ -6618,9 +6622,9 @@ window.__ModuleLoader__.load({
                   onClick: () => {
                     setRecallBusy(true);
                     void rpcRead('recallLog', { sessionId, limit: 15 })
-                      .then((res) => { setRecallItems(Array.isArray(res?.items) ? res.items : []); })
-                      .catch((e) => { setFlash({ kind: 'err', text: msgOf(e) }); })
-                      .finally(() => { setRecallBusy(false); });
+                      .then((res) => { if (alive.current) setRecallItems(Array.isArray(res?.items) ? res.items : []); })
+                      .catch((e) => { if (alive.current) setFlash({ kind: 'err', text: msgOf(e) }); })
+                      .finally(() => { if (alive.current) setRecallBusy(false); });
                   },
                 }, t('common.refresh'))
                 : null),
@@ -8889,32 +8893,47 @@ window.__ModuleLoader__.load({
           const [loading, setLoading] = useState(false);
           const [testRes, setTestRes] = useState(null);
           const [testing, setTesting] = useState(false);
+          const alive = useRef(true);
+          const loadSeq = useRef(0);
+          const testSeq = useRef(0);
+
+          useEffect(() => () => { alive.current = false; }, []);
 
           const loadModels = useCallback(async () => {
+            const seq = (loadSeq.current += 1);
             setLoading(true);
             try {
               const r = await callRpc('probeLocal', { listModels: { kind: 'llm' } }, 'write');
+              if (!alive.current || seq !== loadSeq.current) return;
               setListState(r);
             } catch (e) {
+              if (!alive.current || seq !== loadSeq.current) return;
               setListState({ ok: false, models: [], error: msgOf(e) });
             } finally {
-              setLoading(false);
+              if (alive.current && seq === loadSeq.current) setLoading(false);
             }
           }, []);
 
           useEffect(() => { void loadModels(); }, [loadModels]);
-          useEffect(() => { setTestRes(null); }, [provider, model]);
+          useEffect(() => {
+            testSeq.current += 1;
+            setTestRes(null);
+            setTesting(false);
+          }, [provider, model]);
 
           const runTest = async () => {
+            const seq = (testSeq.current += 1);
             setTesting(true);
             setTestRes(null);
             try {
               const r = await callRpc('probeLocal', { test: { kind: 'llm', provider, model } }, 'write');
+              if (!alive.current || seq !== testSeq.current) return;
               setTestRes(r);
             } catch (e) {
+              if (!alive.current || seq !== testSeq.current) return;
               setTestRes({ ok: false, error: msgOf(e) });
             } finally {
-              setTesting(false);
+              if (alive.current && seq === testSeq.current) setTesting(false);
             }
           };
 
@@ -9246,8 +9265,10 @@ window.__ModuleLoader__.load({
               const a = document.createElement('a');
               a.href = url;
               a.download = `verbatim-${sid.slice(0, 16)}.json`;
+              document.body.appendChild(a);
               a.click();
-              URL.revokeObjectURL(url);
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
             } catch (e) {
               setFlash({ kind: 'err', text: msgOf(e) });
             } finally {
@@ -9296,8 +9317,10 @@ window.__ModuleLoader__.load({
               const a = document.createElement('a');
               a.href = url;
               a.download = `verbatim-${sid.slice(0, 16)}.md`;
+              document.body.appendChild(a);
               a.click();
-              URL.revokeObjectURL(url);
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
             } catch (e) {
               setFlash({ kind: 'err', text: msgOf(e) });
             } finally {

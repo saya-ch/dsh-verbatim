@@ -1,6 +1,6 @@
 {
   "name": "dsh-verbatim",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "一字不改的长期记忆 —— 给陪伴型 Agent 记住你们说过的每一句话",
   "type": "module",
   "license": "MIT",

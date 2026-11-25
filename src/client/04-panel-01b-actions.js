@@ -144,6 +144,8 @@
         }
         let taskId = initialTaskId;
         pollingTaskRef.current = taskId;
+        const mine = (listSeq.current.task = (listSeq.current.task || 0) + 1);
+        const staleTask = () => !alive.current || settled || mine !== listSeq.current.task;
 
         setRebuild({
           phase: 'running',
@@ -185,14 +187,14 @@
         let fullSamples = 0;
 
         const tick = async () => {
-          if (!alive.current || settled) return;
+          if (staleTask()) return;
           let terminal = null;
           let resolvedScope = scope;
 
           if (taskId !== null) {
             try {
               const task = await rpcRead('task', { taskId });
-              if (!alive.current || settled) return;
+              if (staleTask()) return;
               resolvedScope = pickStr(task && task.scope) ?? scope;
               const state = String(task && task.state ? task.state : '');
               const prog = normalizeTaskProgress(task && task.progress);
@@ -223,7 +225,7 @@
           } else {
             try {
               const raw = await rpcRead('status', { sessionId });
-              if (!alive.current || settled) return;
+              if (staleTask()) return;
               const next = normalizeStatus(raw);
               setStatus(next);
               const indexed = next.vector.indexed;
@@ -249,7 +251,7 @@
             }
           }
 
-          if (!alive.current || settled) return;
+          if (staleTask()) return;
           if (terminal !== null) {
             settled = true;
             pollingTaskRef.current = null;

@@ -59,8 +59,9 @@ export function splitSentences(text) {
 export function splitIntoChunks(text, opts = {}) {
   const src = String(text ?? '');
   const min = opts.min ?? CHUNK_MIN_CHARS;
-  const target = opts.target ?? CHUNK_TARGET_CHARS;
+  const target = Math.max(1, opts.target ?? CHUNK_TARGET_CHARS);
   const overlap = opts.overlap ?? CHUNK_OVERLAP_CHARS;
+  const step = Math.max(1, target - overlap);
 
   if (src.length < min) return null;
 
@@ -68,7 +69,7 @@ export function splitIntoChunks(text, opts = {}) {
   // 切不出句子（比如一整段没有标点）→ 按固定长度硬切，总比丢掉好
   if (sentences.length === 0) {
     const chunks = [];
-    for (let i = 0, idx = 0; i < src.length; i += target - overlap, idx++) {
+    for (let i = 0, idx = 0; i < src.length; i += step, idx++) {
       chunks.push({
         text: src.slice(i, i + target),
         start: i,
@@ -97,13 +98,14 @@ export function splitIntoChunks(text, opts = {}) {
 
   for (const s of sentences) {
     // 超长单句：自己就超过 target，先 flush 再硬切
-    if (s.text.length > target && buf.trim() === '') {
+    if (s.text.length > target) {
+      flush();
       let off = s.start;
       while (off < s.end) {
         const slice = src.slice(off, off + target);
         chunks.push({ text: slice, start: off, end: off + slice.length, index: chunks.length });
         if (off + target >= s.end) break;
-        off += target - overlap;
+        off += step;
       }
       buf = '';
       bufStart = s.end;

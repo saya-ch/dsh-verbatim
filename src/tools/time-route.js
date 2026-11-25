@@ -132,7 +132,9 @@ function parsePureDate(text, nowTs, tzOffsetMs) {
     const d = Number(m[2]);
     const year = shanghaiParts(nowTs, tzOffsetMs).y;
     let day = makeDay(year, mo, d, tzOffsetMs);
-    if (day !== null && day > startOfDay(nowTs, tzOffsetMs)) day = makeDay(year - 1, mo, d, tzOffsetMs);
+    if ((day === null && mo === 2 && d === 29) || (day !== null && day > startOfDay(nowTs, tzOffsetMs))) {
+      day = makeDay(year - 1, mo, d, tzOffsetMs);
+    }
     return day !== null ? { day, hasYear: false } : null;
   }
 

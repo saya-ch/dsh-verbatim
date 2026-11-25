@@ -179,10 +179,12 @@ export function createSceneOps({
           nextScene.id,
         );
       }
+      try {
+        extras?.window?.clearForScenes?.([cur.id]);
+      } catch { /* ignore */ }
       stmt('DELETE FROM scene WHERE id = ?').run(cur.id);
     });
     try {
-      extras?.window?.clearForScenes?.([cur.id]);
       if (extras?.window?.replaceForScene) {
         extras.window.replaceForScene(prev.id, buildAdaptiveWindowsForScene(allMsgs, { sceneId: prev.id, sessionId }));
       }
@@ -490,6 +492,7 @@ export function createSceneOps({
     withTx(db, () => {
       if (mergedContent) {
         stmt('UPDATE note SET content = ? WHERE id = ?').run(mergedContent, keepId);
+        deleteVecRows(db, 'note', [keepId]);
       }
       for (const did of dropIds) {
         dropped += extras.note.softDelete(did, now, hasSid ? { sessionId } : {});

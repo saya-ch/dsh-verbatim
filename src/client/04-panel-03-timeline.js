@@ -83,11 +83,13 @@
           setMediaPreviews((prev) => ({ ...prev, [key]: { loading: true } }));
           try {
             const res = await rpcRead('mediaPreview', { id: md.id, sessionId });
+            if (!alive.current) return;
             setMediaPreviews((prev) => ({
               ...prev,
               [key]: res && res.ok ? { ok: true, src: res.dataUrl || res.url } : { ok: false, reason: res?.reason || '无法预览' },
             }));
           } catch (e) {
+            if (!alive.current) return;
             setMediaPreviews((prev) => ({ ...prev, [key]: { ok: false, reason: msgOf(e) } }));
           }
         };
