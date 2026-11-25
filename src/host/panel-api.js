@@ -4,7 +4,6 @@
  * 从 index.js 拆出，使 Host 插件入口与面板 RPC 契约职责分离。
  */
 
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -12,25 +11,17 @@ import { createExtras, createRepo } from '../store/repo.js';
 import {
   assertSessionId,
   defaultSessionConfig,
-  loadSessionConfig,
-  loadSessionExcludeRanges,
   normalizeRanges,
   setSessionExcludeRanges,
   setSessionFlag,
 } from '../config/session-config.js';
 import { ConfigError } from '../config/exclude-range.js';
-import { resolveTimeWindow } from '../tools/time-route.js';
 import { importSession } from '../pipeline.js';
 import { gistHeadline } from '../derive/gist.js';
-import { NOTE_MIN_SCORE_DEFAULT, PINNED_NOTE_MAX_DEFAULT, searchRankedNotes } from '../search/note-rank.js';
 import {
   dayKeyInZone,
-  exportMessages,
-  parseInstant,
   stripBridgeMetadata,
-  textBlocksOf,
 } from '../ingest/export.js';
-import { listSessionFiles, readSessionFile } from '../ingest/reader.js';
 import { loadGlobalConfig, saveGlobalConfig, globalConfigPath } from '../config/global-config.js';
 import {
   createConfigResolver,
@@ -45,9 +36,6 @@ import { createDbAdmin } from './db-admin.js';
 import { createRebuildManager } from './rebuild.js';
 import { createSceneOps } from './scene-ops.js';
 import { createSessionLock } from './session-lock.js';
-import { createReranker } from '../model/rerank.js';
-import { dedupeBySpan, createSpanIndex } from '../search/dedupe.js';
-import { SCENE_FALLBACK_ENABLED } from '../search/scene-fallback.js';
 import {
   API_PREFIX,
   PANEL_METHODS,
@@ -55,6 +43,15 @@ import {
   createPanelHandler,
 } from './panel-http.js';
 import { findSessionFile, findLatestSession } from './session-sync.js';
+import {
+  TIME_MAX,
+  ALL_ROWS,
+  intParam,
+  boolParam,
+  instantParam,
+  createPanelSessionStore,
+} from './panel-session-store.js';
+import { createPanelSearch } from './panel-search.js';
 
 export {
   API_PREFIX,
@@ -64,52 +61,6 @@ export {
   findSessionFile,
   findLatestSession,
 };
-
-/** 时间上界：比任何真实 at 都大（注意别用位运算，会把数截成 int32） */
-const TIME_MAX = Number.MAX_SAFE_INTEGER;
-
-/** 「取该会话全部消息」的上限（库才几千条，够用且不用分页） */
-const ALL_ROWS = 5_000_000;
-
-/** 日志导出缓存最多留几个会话（45MB 日志解压后是纯 CPU，多会话切换时适当保留） */
-const LOG_CACHE_MAX = 8;
-
-/** 会话日志文件清单的缓存时长（792 个目录的 stat，别每个请求都扫） */
-const SESSION_FILE_TTL_MS = 30_000;
-
-/** 取整参数（缺省给默认值；范围外/非整数直接报错，不静默截断） */
-function intParam(value, name, { def, min = -Infinity, max = Infinity } = {}) {
-  if (value === undefined || value === null || value === '') {
-    if (def === undefined) throw new PanelError('BAD_ARG', `缺少参数 ${name}`, 400);
-    return def;
-  }
-  const n = Number(value);
-  if (!Number.isInteger(n)) {
-    throw new PanelError('BAD_ARG', `${name} 必须是整数，收到 ${JSON.stringify(value)}`, 400);
-  }
-  if (n < min || n > max) {
-    throw new PanelError('BAD_ARG', `${name} 超出范围 [${min}, ${max}]：${n}`, 400);
-  }
-  return n;
-}
-
-/** 取布尔参数：接受 true/false、'true'/'false'、1/0（query 串里全是字符串） */
-function boolParam(value, name) {
-  if (typeof value === 'boolean') return value;
-  if (value === 'true' || value === 1 || value === '1') return true;
-  if (value === 'false' || value === 0 || value === '0') return false;
-  throw new PanelError('BAD_ARG', `${name} 必须是 true/false，收到 ${JSON.stringify(value)}`, 400);
-}
-
-/** 时间参数：数字（epoch ms）或 `YYYY-MM-DD` / ISO 串；解析不了就报错 */
-function instantParam(value, name, def) {
-  if (value === undefined || value === null || value === '') return def;
-  const at = parseInstant(value);
-  if (at === null || !Number.isFinite(at)) {
-    throw new PanelError('BAD_ARG', `${name} 看不懂：${JSON.stringify(value)}（支持 epoch 毫秒 / YYYY-MM-DD / ISO）`, 400);
-  }
-  return at;
-}
 
 /** 依赖 DSH 的工具注册表与 HTTP 载体 */
 
@@ -156,188 +107,6 @@ export function createPanelApi(opts = {}) {
     return s;
   };
 
-  /* ───────────────────────── 会话与日志定位 ───────────────────────── */
-
-  /** 会话日志文件清单缓存（listSessionFiles 要 stat 792 个目录） */
-  let filesCache = { at: 0, list: [] };
-  function sessionFiles() {
-    const now = Date.now();
-    if (now - filesCache.at < SESSION_FILE_TTL_MS) return filesCache.list;
-    let list = [];
-    try {
-      list = listSessionFiles(sessionsRoot);
-    } catch {
-      list = [];
-    }
-    filesCache = { at: now, list };
-    return list;
-  }
-
-  /**
-   * 按 sessionId 找原始日志文件。
-   *
-   * 库里 `msg.session_id` 有两种形态（实测都出现过）：
-   *   `session-<uuid>`（日志头 id / 目录名带前缀）
-   *   `<uuid>`（有的工作区目录名不带前缀）
-   * 所以两种都试，不要只认一种。
-   *
-   * @param {string} sessionId
-   * @returns {string|null}
-   */
-  function findLogFile(sessionId) {
-    const wanted = [sessionId];
-    if (sessionId.startsWith('session-')) wanted.push(sessionId.slice('session-'.length));
-    else wanted.push(`session-${sessionId}`);
-    const list = sessionFiles();
-    for (const id of wanted) {
-      const hit = list.find((f) => f.sessionId === id);
-      if (hit) return hit.filePath;
-    }
-    return null;
-  }
-
-  /** 日志缓存（按文件路径；只留最近 2 个会话，避免几百 MB 常驻） */
-  const logCache = new Map();
-
-  /**
-   * 从原始日志重导出某个会话（按 mtime+size 缓存）。
-   *
-   * 为什么面板要读日志：
-   *   - `rewindedMsgs`（已撤回排除 N 条）在库里查不到 —— 撤回是物理删除（D-118），
-   *     只能从日志的 rewind 事件重新数；
-   *   - `panel.verify` 要拿「日志原文」和「库里的正文」逐字比对（C4/E2）。
-   *
-   * 返回 null 表示这个会话找不到日志（不是错误：面板照样能显示库里的数据）。
-   *
-   * @param {string} sessionId
-   * @returns {{file: string, raw: Map<number, {speaker: string, at: number, raw: string}>, stats: object}|null}
-   */
-  function loadLog(sessionId) {
-    const file = findLogFile(sessionId);
-    if (!file) return null;
-
-    let stat;
-    try {
-      stat = fs.statSync(file);
-    } catch {
-      return null;
-    }
-
-    const cached = logCache.get(file);
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached;
-
-    let reader;
-    try {
-      reader = readSessionFile(file);
-    } catch (error) {
-      logger.warn?.(`[verbatim] 读会话日志失败（面板按「无日志」处理）：${error?.message ?? error}`);
-      return null;
-    }
-
-    // 排除区间只影响 excluded 标记，不影响 rewound 计数；配置坏了也不该让面板崩
-    let excludeRanges = [];
-    try {
-      excludeRanges = loadSessionExcludeRanges(sessionId, { dbRoot });
-    } catch {
-      excludeRanges = [];
-    }
-
-    const exported = exportMessages(reader.events, {
-      sessionId,
-      includeRewound: true,
-      excludeRanges,
-    });
-
-    // verify 要的是「日志原文」：保留清洗前的 text 块，比对时再 stripBridgeMetadata（D-216）
-    const raw = new Map();
-    for (const ev of reader.events) {
-      if (ev?.type !== 'user/message' && ev?.type !== 'assistant/message') continue;
-      const text = textBlocksOf(ev);
-      if (!text.trim()) continue;
-      raw.set(ev.seq, {
-        speaker: ev.type === 'user/message' ? 'user' : 'assistant',
-        at: typeof ev.time === 'number' ? ev.time : null,
-        raw: text,
-      });
-    }
-
-    const entry = {
-      file,
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-      sessionId,
-      raw,
-      stats: exported.stats,
-    };
-    logCache.set(file, entry);
-    while (logCache.size > LOG_CACHE_MAX) logCache.delete(logCache.keys().next().value);
-    return entry;
-  }
-
-  /** 读日志但永不抛：面板不该因为日志缺失就整个打不开 */
-  function safeLoadLog(sessionId) {
-    try {
-      return loadLog(sessionId);
-    } catch (error) {
-      logger.warn?.(`[verbatim] 导出会话日志失败：${error?.message ?? error}`);
-      return null;
-    }
-  }
-
-  /* ───────────────────────── 配置与开关 ───────────────────────── */
-
-  /** 读该会话的配置（文件不存在 → 默认值，不落盘） */
-  function readSessionConfig(sessionId) {
-    try {
-      return loadSessionConfig(sessionId, { dbRoot });
-    } catch (error) {
-      throw new PanelError('CONFIG_INVALID', `会话配置读不出来：${error?.message ?? error}`, 500);
-    }
-  }
-
-  /* ───────────────────────── 会话统计（按会话，不是全库） ───────────────────────── */
-
-  /**
-   * 该会话的聚合数字。
-   *
-   * 全部走 repo（不写 SQL）。`extras.stats.get({ sessionId })` 也能给基础数字，
-   * 但面板还要两样它没有的：in_surface=0 的条数/字数（B4 的核心数字）、
-   * 按天去重的 dayCount。所以这里把该会话的消息一次取出来自己算
-   * （2815 条约 20ms，比多跑几条聚合 SQL 简单，口径也只有一处）。
-   *
-   * @param {string} sessionId
-   */
-  function sessionAggregate(sessionId) {
-    // includeExcluded=true：被按日期排除的消息也入库了，统计条数时要算进去
-    const msgs = repo.msgsByTimeRange(sessionId, 0, TIME_MAX, ALL_ROWS, true);
-    let totalChars = 0;
-    let compactedMsgs = 0;
-    let compactedChars = 0;
-    const days = new Set();
-    for (const m of msgs) {
-      totalChars += m.text.length;
-      if (m.inSurface === 0) {
-        compactedMsgs += 1;
-        compactedChars += m.text.length;
-      }
-      days.add(dayKeyInZone(m.at));
-    }
-    const scenes = repo.scenesByTimeRange(sessionId, 0, TIME_MAX, ALL_ROWS);
-    return {
-      msgs,
-      scenes,
-      totalMsgs: msgs.length,
-      totalChars,
-      startAt: msgs.length ? msgs[0].at : null,
-      compactedMsgs,
-      compactedChars,
-      sceneCount: scenes.length,
-      dayCount: days.size,
-    };
-  }
-
-  /* ───────────────────────── 向量状态（B6 / B7） ───────────────────────── */
-
   const {
     getGlobal,
     invalidateGlobal,
@@ -347,155 +116,6 @@ export function createPanelApi(opts = {}) {
     hasLlmReady,
     rerankCfg,
   } = createConfigResolver({ config, dshHome, logger, getHostLlm });
-
-  /**
-   * 面板索引状态 —— **「索引是什么」这个实体的唯一窗口**（2026-11-18 重构）。
-   *
-   * A1 审计的核心结论：系统之前没有「索引」这个实体，只有散落在 msg.vec_model /
-   * 各向量表 / config.json / 内存 tasks 里的碎片。于是三个问题永远答不出来：
-   *   ① 库里用的是什么模型？  ② 现在配的是什么模型？  ③ 两者一致吗 / 混过吗？
-   *
-   * 现在一次答完：
-   *   models          库里**全部**的 (模型, 维度, 条数) —— 不是只报多数派
-   *   configured      当前配置的模型（归一化后的 id）
-   *   consistent      库里是否只有一种模型
-   *   modelMatch      库里模型是否 == 当前配置
-   *   state           7 态：disabled / mixed / empty / mismatch / partial / degraded / ok
-   *                   （model-mismatch 优先级高于 degraded/ok；降级要明说，不能假装正常）
-   *
-   * @param {string} sessionId
-   * @param {number} totalMsgs 该会话的入库条数（= 索引分母）
-   */
-  function vectorStatus(sessionId, totalMsgs) {
-    // ① 库里**全部**模型分组（之前 `LIMIT 1` 只报多数派，混用时另一组静默消失）
-    let models = [];
-    let indexed = 0;
-    try {
-      models = stmt(
-        `SELECT vec_model AS model, vec_dim AS dim, COUNT(*) AS n
-         FROM msg
-         WHERE session_id = ? AND vec_model IS NOT NULL
-         GROUP BY vec_model, vec_dim
-         ORDER BY n DESC`,
-      ).all(sessionId).map((r) => ({
-        model: String(r.model),
-        dim: r.dim === null || r.dim === undefined ? null : Number(r.dim),
-        count: Number(r.n),
-      }));
-      indexed = models.reduce((s, m) => s + m.count, 0);
-    } catch {
-      models = [];   // 老库没有 vec_model 列
-      indexed = 0;
-    }
-
-    // ② 当前配置的模型（归一化后与库里同样的格式）
-    let configured = null;
-    try {
-      const emb = embCfg();
-      const norm = String(emb.model ?? '').trim().replace(/:latest$/i, '').replace(/\/+$/, '');
-      configured = norm ? { model: `sf:${norm}@${emb.dim}`, dim: emb.dim } : null;
-    } catch {
-      configured = null;
-    }
-
-    const key = hasEmbeddingKey();
-    const vecLoaded = handle.hasVec === true;
-
-    // ③ 一致性判定
-    const consistent = models.length <= 1;                       // 库里没混模型
-    const top = models[0] ?? null;
-    const modelMatch = configured === null ? null
-      : (top !== null && top.model === configured.model && top.dim === configured.dim);
-
-    const coverage = totalMsgs > 0 ? indexed / totalMsgs : 0;
-    const MIN_COVERAGE = 0.5;
-
-    let state;
-    let reason;
-    if (!key) {
-      state = 'disabled';
-      reason = '语义搜索未启用：没有配 embedding 的 API Key（去设置页填，或把服务类型改成「本地」）。时间轴与关键词检索照常可用。';
-    } else if (models.length > 1) {
-      // **混用**：两种模型的向量空间不可比，混算不报错但结果无意义 —— 必须先重建
-      state = 'mixed';
-      reason = `库里有 ${models.length} 套向量（${models.map((m) => `${m.model} ${m.count} 条`).join(' / ')}）。`
-        + '不同模型的向量不可比，语义搜索现在不可用；重建一次就好（原文不会动）。';
-    } else if (indexed === 0) {
-      state = 'empty';
-      reason = `语义搜索还没建索引（0 / ${totalMsgs} 条）。点 [重建] 建一次就能用；在那之前检索只走关键词和时间轴，不会白跑 embedding。`;
-    } else if (modelMatch === false) {
-      // **模型换了但没重建**：这之前显示「正常」，实际每次查询都抛 vec:err
-      state = 'mismatch';
-      reason = `索引是用 ${top.model} 建的，现在配置的是 ${configured?.model ?? '（未配置）'}。`
-        + '两者不是同一个模型，语义搜索用不了 —— 用新模型重建一次就行（原文不会动）。';
-    } else if (coverage < MIN_COVERAGE) {
-      state = 'partial';
-      reason = `语义搜索的索引只覆盖了 ${indexed} / ${totalMsgs} 条（${(coverage * 100).toFixed(1)}%）。`
-        + '覆盖率太低时语义召回会系统性偏向已索引的部分，所以这时不跑语义路；点 [重建] 可以补全。';
-    } else if (!vecLoaded) {
-      state = 'degraded';
-      reason = 'sqlite-vec 加载失败，已降级为暴力余弦（功能等价、结果一致，只是稍慢）。';
-    } else {
-      state = 'ok';
-      reason = '语义检索可用。';
-    }
-
-    let pending = 0;
-    try {
-      pending = typeof extras?.vecMeta?.countPending === 'function'
-        ? extras.vecMeta.countPending({ sessionId })
-        : Math.max(0, totalMsgs - indexed);
-    } catch {
-      pending = Math.max(0, totalMsgs - indexed);
-    }
-
-    let windowTotal = 0;
-    let windowPending = 0;
-    const windowKinds = { window: 0, exchange: 0, thread: 0 };
-    try {
-      windowTotal = typeof extras?.window?.count === 'function' ? extras.window.count({ sessionId }) : 0;
-      windowPending = typeof extras?.window?.countPending === 'function' ? extras.window.countPending({ sessionId }) : 0;
-      if (windowTotal > 0) {
-        const kRows = db.prepare(
-          "SELECT COALESCE(kind, 'window') AS kind, COUNT(*) AS n FROM window WHERE session_id = ? GROUP BY COALESCE(kind, 'window')",
-        ).all(sessionId);
-        for (const r of kRows) {
-          const k = r.kind === 'exchange' || r.kind === 'thread' ? r.kind : 'window';
-          windowKinds[k] += Number(r.n ?? 0);
-        }
-      }
-    } catch {
-      windowTotal = 0;
-      windowPending = 0;
-    }
-    const windowIndexed = Math.max(0, windowTotal - windowPending);
-
-    return {
-      // 兼容旧字段（面板和测试都读 model/dim）
-      model: top?.model ?? null,
-      dim: top?.dim ?? null,
-      models,                 // 全部模型分组
-      configured,             // 当前配置
-      consistent,             // 库里没混模型
-      modelMatch,             // 库里 == 当前配置（null = 不知道）
-      indexed,
-      total: totalMsgs,
-      pending,
-      coverage,
-      state,
-      reason,
-      hasVec: vecLoaded,
-      hasKey: key,
-      windows: {
-        total: windowTotal,
-        indexed: windowIndexed,
-        pending: windowPending,
-        kinds: windowKinds,
-      },
-    };
-  }
-
-  /* ───────────────────────── 空态/限制说明（B7 的诚实原则） ───────────────────────── */
 
   /** note 表有没有 session_id 列（v6 起已加；保留探测以兼容未迁移的 v5 老库） */
   let noteColsCache = null;
@@ -512,39 +132,29 @@ export function createPanelApi(opts = {}) {
     return noteColsCache;
   }
 
-  function buildWarnings() {
-    const warnings = [];
-    if (!noteHasSessionColumn()) {
-      warnings.push(
-        'note 表没有 session_id 列（老库还没迁移到 v6），「TA的笔记」只能显示全库笔记，暂时无法按会话过滤。'
-        + '其余统计（条数/字数/场景/压缩/撤回）都只算当前会话。',
-      );
-    } else {
-      // 遗留笔记（v6 之前写的，没有会话归属）不属于任何对话，面板按会话过滤时看不到。
-      // 这个数字要说出来，否则用户会以为"我记的笔记没了"。
-      try {
-        const orphan = Number(
-          stmt('SELECT COUNT(*) AS c FROM note WHERE deleted_at IS NULL AND session_id IS NULL').get().c ?? 0,
-        );
-        if (orphan > 0) {
-          warnings.push(
-            `有 ${orphan} 条 v6 之前写下的遗留笔记没有会话归属（session_id 为空），`
-            + '它们不属于任何一个对话，所以不在这个面板里显示 —— 不是丢了。',
-          );
-        }
-      } catch {
-        // 查询失败就不提，不影响主统计
-      }
-    }
-    if (!hasEmbeddingKey()) {
-      warnings.push(
-        `语义搜索未启用（缺 embedding API Key）。时间轴与关键词检索不受影响。`,
-      );
-    } else if (handle.hasVec !== true) {
-      warnings.push('sqlite-vec 未加载，向量检索降级为暴力余弦（结果一致、稍慢）。');
-    }
-    return warnings;
-  }
+  const {
+    sessionFiles,
+    findLogFile,
+    loadLog,
+    safeLoadLog,
+    readSessionConfig,
+    sessionAggregate,
+    vectorStatus,
+    buildWarnings,
+    cachedLogs,
+  } = createPanelSessionStore({
+    handle,
+    repo,
+    extras,
+    db,
+    stmt,
+    dbRoot,
+    sessionsRoot,
+    logger,
+    embCfg,
+    hasEmbeddingKey,
+    noteHasSessionColumn,
+  });
 
   const {
     recentTasks,
@@ -623,10 +233,7 @@ export function createPanelApi(opts = {}) {
     const log = safeLoadLog(sessionId);
     const rewindedMsgs = log ? Number(log.stats.rewoundCount ?? 0) : null;
     const rewindedChars = log ? Number(log.stats.rewoundChars ?? 0) : null;
-    let excludedMsgs = 0;
-    for (const m of agg.msgs) {
-      if (m.excluded === 1) excludedMsgs += 1;
-    }
+    const excludedMsgs = agg.excludedMsgs;
     const deletedNotesCount = noteHasSessionColumn()
       ? extras.note.count({ sessionId, deletedOnly: true })
       : extras.note.count({ deletedOnly: true });
@@ -694,7 +301,6 @@ export function createPanelApi(opts = {}) {
     const to = instantParam(params.to, 'to', TIME_MAX);
     if (to <= from) throw new PanelError('BAD_RANGE', `to（${to}）必须大于 from（${from}）`, 400);
 
-    const msgs = repo.msgsByTimeRange(sessionId, from, to, ALL_ROWS, true);
     const scenes = repo.scenesByTimeRange(sessionId, from, to, ALL_ROWS);
 
     /** @type {Map<string, {date:string, msgCount:number, sceneCount:number, chars:number, scenes:object[]}>} */
@@ -708,11 +314,13 @@ export function createPanelApi(opts = {}) {
       return d;
     };
 
-    for (const m of msgs) {
-      const d = ensure(dayKeyInZone(m.at));
+    for (const m of stmt(
+      'SELECT at, LENGTH(text) AS len, scene_id FROM msg WHERE session_id = ? AND at >= ? AND at < ?',
+    ).iterate(sessionId, from, to)) {
+      const d = ensure(dayKeyInZone(Number(m.at)));
       d.msgCount += 1;
-      d.chars += m.text.length;
-      if (m.sceneId === null || m.sceneId === undefined) {
+      d.chars += Number(m.len ?? 0);
+      if (m.scene_id === null || m.scene_id === undefined) {
         d.pendingMsgs += 1;
       }
     }
@@ -856,216 +464,20 @@ export function createPanelApi(opts = {}) {
    * `panel.search({ sessionId, query, when?, limit?, includeExcluded? })`
    * 面板搜索：关键词路优先；命中 < 5 条且本会话向量可用时按需补语义路（RRF 融合）。
    */
-  async function search(params) {
-    const sessionId = requireSession('search', params);
-    const query = String(params.query ?? '').trim();
-    if (!query) throw new PanelError('BAD_ARG', '缺少搜索关键词 query', 400);
-    const limit = intParam(params.limit, 'limit', { def: 20, min: 1, max: 50 });
-    const includeExcluded =
-      params.includeExcluded === 'false' || params.includeExcluded === '0'
-        ? false
-        : Boolean(params.includeExcluded);
-
-    const whenRaw = params.when === undefined || params.when === null ? '' : String(params.when).trim();
-    let from;
-    let to;
-    if (whenRaw) {
-      const win = resolveTimeWindow({ when: whenRaw });
-      if (win.kind === 'unknown') {
-        throw new PanelError(
-          'BAD_WHEN',
-          `看不懂的时间范围：${JSON.stringify(whenRaw)}（支持如 2026-11-09、11-09、2026-11、2026-11-09..2026-11-12 或 7d）`,
-          400,
-        );
-      }
-      if (Number.isFinite(win.from)) from = Number(win.from);
-      if (Number.isFinite(win.to)) to = Number(win.to);
-    }
-
-    const kwOpts = { sessionId, includeExcluded };
-    if (from !== undefined) kwOpts.from = from;
-    if (to !== undefined) kwOpts.to = to;
-    const kwTotal = extras.search.countKeyword(query, kwOpts);
-
-    // （跨句多词关键词检索已移除：与 vec_window 语义召回重叠且易引入噪声）
-
-    // 场景摘要（scene.gist）同样参与检索：关键词匹配 + 语义路 vec_scene 匹配
-    const sceneMatchMap = new Map();
-    try {
-      const likePat = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
-      const conds = ['session_id = ?', "gist IS NOT NULL AND gist LIKE ? ESCAPE '\\'"];
-      const binds = [sessionId, likePat];
-      if (!includeExcluded) conds.push('NOT (has_excluded = 1 AND excluded_count >= msg_count)');
-      if (from !== undefined) { conds.push('end_at >= ?'); binds.push(from); }
-      if (to !== undefined) { conds.push('start_at < ?'); binds.push(to); }
-      const scKw = db.prepare(
-        `SELECT id, start_at, end_at, msg_count, gist
-         FROM scene
-         WHERE ${conds.join(' AND ')}
-         ORDER BY end_at DESC
-         LIMIT 4`,
-      ).all(...binds);
-      for (const s of scKw) {
-        sceneMatchMap.set(Number(s.id), {
-          id: Number(s.id),
-          startAt: Number(s.start_at),
-          endAt: Number(s.end_at),
-          msgCount: Number(s.msg_count ?? 0),
-          gist: String(s.gist ?? ''),
-          sources: ['keyword'],
-          score: null,
-        });
-      }
-    } catch { /* best-effort */ }
-
-    const totalMsgs = extras.stats.get({ sessionId }).msgs;
-    const vecStat = vectorStatus(sessionId, totalMsgs);
-    let shown = [];
-    let total = kwTotal;
-    let used = false;
-    let semanticNote = null;
-    let semProvider = null;
-    let semStore = null;
-    let reranked = false;
-    let rerankModel = null;
-    let rerankError = null;
-
-    const canSemantic = hasEmbeddingKey() && (vecStat.state === 'ok' || vecStat.state === 'degraded');
-    if (!canSemantic) {
-      semanticNote = vecStat.reason;
-    } else {
-      if (vecStat.state === 'degraded') semanticNote = vecStat.reason;
-      try {
-        semProvider = await makeEmbeddingProvider();
-      } catch (err) {
-        semanticNote = `语义搜索失败，已降级为仅关键词：${err?.message ?? err}`;
-      }
-    }
-
-    let rerankerObj = null;
-    const rr = rerankCfg();
-    const rrApiKey = rr.apiKey || (rr.apiKeyEnv ? process.env[rr.apiKeyEnv] : '') || '';
-    if (rr.enabled && rr.model && rr.baseUrl && (rr.mode === 'local' || rrApiKey)) {
-      rerankerObj = createReranker({
-        model: rr.model,
-        baseURL: rr.baseUrl,
-        apiKey: rrApiKey,
-        local: rr.mode === 'local',
-      });
-    }
-
-    // 与 Agent 工具共用同一套 v15 检索内核（避免双套代码漂移）
-    let trace = null;
-    const { createSearchTool } = await import('../tools/memory-search.js');
-    const searchTool = createSearchTool({
-      handle,
-      repo,
-      extras,
-      dshHome,
-      sessionId,
-      ...(semProvider ? { provider: semProvider, semantic: true } : { semantic: false }),
-      ...(rerankerObj ? { reranker: rerankerObj, rerankTopN: rr.topN || 50 } : { rerank: false }),
-      logger: { warn: (m) => logger.warn?.(m) },
-      onResult: (tr) => { trace = tr; },
-    });
-    await searchTool.handler({
-      query,
-      ...(whenRaw ? { when: whenRaw } : {}),
-      limit,
-      includeExcluded,
-      scope: 'msg',
-    }, { allowExcluded: true });
-
-    shown = Array.isArray(trace?.shownHits) ? trace.shownHits : [];
-    total = Math.max(kwTotal, Array.isArray(trace?.hits) ? trace.hits.length : shown.length);
-    if (trace?.meta) {
-      used = canSemantic && Boolean(semProvider) && !trace.meta.vectorSkipped && !trace.meta.vectorError;
-      if (trace.meta.vectorError) {
-        used = false;
-        semanticNote = `语义搜索失败，已降级为仅关键词：${trace.meta.vectorError}`;
-      }
-      reranked = Boolean(trace.meta.reranked);
-      rerankModel = trace.meta.rerankModel ?? null;
-      rerankError = trace.meta.rerankError ?? null;
-    }
-
-    const matchedScenes = [...sceneMatchMap.values()]
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || (b.endAt - a.endAt))
-      .slice(0, 4);
-
-    // 笔记高权重置顶召回（关键词 + vec_note 语义融合 + 分数门槛 >= 0.58）
-    let matchedNotes = [];
-    try {
-      const noteCount = noteHasSessionColumn()
-        ? extras.note.count({ sessionId })
-        : extras.note.count({});
-      if (noteCount > 0) {
-        if (!semStore && hasEmbeddingKey()) {
-          try {
-            if (!semProvider) semProvider = await makeEmbeddingProvider();
-            const { createVectorStore } = await import('../search/vector-store.js');
-            semStore = createVectorStore(handle, {
-              dim: semProvider.dim,
-              logger: { warn: (m) => logger.warn?.(`[verbatim] ${m}`) },
-            });
-          } catch { /* 装配失败则只走笔记关键词路 */ }
-        }
-        const nr = await searchRankedNotes({
-          extras,
-          sessionId: noteHasSessionColumn() ? sessionId : null,
-          query,
-          from: from ?? null,
-          to: to ?? null,
-          provider: semProvider,
-          store: semStore,
-          minScore: NOTE_MIN_SCORE_DEFAULT,
-          limit: PINNED_NOTE_MAX_DEFAULT,
-        });
-        matchedNotes = nr.hits.map((n) => ({
-          id: Number(n.id),
-          content: String(n.content ?? ''),
-          about: n.about ?? null,
-          at: Number(n.at),
-          score: typeof n.score === 'number' ? n.score : null,
-          sources: Array.isArray(n.sources) ? n.sources : ['keyword'],
-        }));
-      }
-    } catch { /* 笔记检索失败不影响主流程 */ }
-
-    return {
-      query,
-      total,
-      matchedNotes,
-      matchedScenes,
-      hits: shown.map((r) => ({
-        id: Number(r.id),
-        seq: r.seq,
-        at: r.at,
-        speaker: r.speaker,
-        text: r.text,
-        inSurface: r.inSurface ?? 1,
-        excluded: r.excluded ?? 0,
-        sceneId: r.sceneId ?? null,
-        sceneStartAt: r.sceneStartAt ?? null,
-        sceneEndAt: r.sceneEndAt ?? null,
-        sceneMsgCount: r.sceneMsgCount ?? null,
-        sources: Array.isArray(r.sources) ? r.sources : ['keyword'],
-        score: typeof r.score === 'number' ? r.score : null,
-        chunk: r.chunk ?? null,
-        window: r.window ?? null,
-        ...(r.focusExchange ? { focusExchange: r.focusExchange } : {}),
-        ...(Array.isArray(r.relatedTimeline) && r.relatedTimeline.length > 0
-          ? {
-              relatedTimeline: r.relatedTimeline.map((rt) => ({
-                at: rt.at ?? rt.sceneStartAt ?? null,
-                sceneId: rt.sceneId ?? null,
-              })),
-            }
-          : {}),
-      })),
-      semantic: { used, state: vecStat.state, note: semanticNote, reranked, rerankModel, rerankError },
-    };
-  }
+  const search = createPanelSearch({
+    handle,
+    repo,
+    extras,
+    db,
+    dshHome,
+    logger,
+    requireSession,
+    vectorStatus,
+    hasEmbeddingKey,
+    makeEmbeddingProvider,
+    rerankCfg,
+    noteHasSessionColumn,
+  });
 
 
   /**
@@ -1075,11 +487,15 @@ export function createPanelApi(opts = {}) {
    */
   function sample(params) {
     const sessionId = requireSession('sample', params);
-    const msgs = repo.msgsByTimeRange(sessionId, 0, TIME_MAX, ALL_ROWS, true);
-    if (msgs.length === 0) return null;
+    const total = Number(stmt('SELECT COUNT(*) AS c FROM msg WHERE session_id = ?').get(sessionId)?.c ?? 0);
+    if (total === 0) return null;
 
-    // 均匀随机：每次「抽一条」都可能是不同的，人才能靠抽查建立信任
-    const m = msgs[Math.floor(Math.random() * msgs.length)];
+    // 均匀随机：O(1) 抽样，不把全库消息正文拉进内存
+    const offset = Math.floor(Math.random() * total);
+    const picked = stmt('SELECT id FROM msg WHERE session_id = ? ORDER BY seq LIMIT 1 OFFSET ?').get(sessionId, offset);
+    if (!picked) return null;
+    const m = repo.msgsByIds([Number(picked.id)])[0];
+    if (!m) return null;
     const scene = m.sceneId ? repo.sceneById(m.sceneId) : null;
     return {
       id: m.id,
@@ -1683,7 +1099,7 @@ export function createPanelApi(opts = {}) {
     debug() {
       return {
         methodNames: Object.keys(methods),
-        cachedLogs: [...logCache.keys()],
+        cachedLogs: cachedLogs(),
         tasks: recentTasks(),
         dbRoot,
         dbPath,

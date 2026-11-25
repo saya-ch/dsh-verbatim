@@ -10,11 +10,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PARTS_DIR = path.join(ROOT, 'src', 'client');
 const OUT_FILE = path.join(ROOT, 'client.js');
+const PART_WARN_BYTES = 65 * 1024;
 
 const parts = fs.readdirSync(PARTS_DIR)
   .filter((f) => f.endsWith('.js'))
@@ -25,9 +27,22 @@ if (parts.length === 0) {
   process.exit(1);
 }
 
-const built = parts
-  .map((f) => fs.readFileSync(path.join(PARTS_DIR, f), 'utf8'))
-  .join('');
+const chunks = parts.map((f) => {
+  const code = fs.readFileSync(path.join(PARTS_DIR, f), 'utf8');
+  if (Buffer.byteLength(code, 'utf8') > PART_WARN_BYTES) {
+    console.warn(`[build-client] 警告: ${f} 体积 ${(Buffer.byteLength(code, 'utf8') / 1024).toFixed(1)} KB (>65 KB)，建议继续拆分`);
+  }
+  return code;
+});
+
+const built = chunks.join('');
+
+try {
+  new vm.Script(built, { filename: 'client.js' });
+} catch (err) {
+  console.error(`[build-client] 拼接后语法校验失败: ${err?.message ?? err}`);
+  process.exit(1);
+}
 
 if (process.argv.includes('--check')) {
   const current = fs.existsSync(OUT_FILE) ? fs.readFileSync(OUT_FILE, 'utf8') : '';
