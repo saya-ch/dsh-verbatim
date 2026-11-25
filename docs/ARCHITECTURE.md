@@ -21,7 +21,7 @@
 ## 3. 混合检索与精排
 
 1. **多路召回（[src/tools/memory-search.js](file:///c:/workspace/dsh-verbatim/src/tools/memory-search.js)）**：
-   - `when` 解析（[src/tools/time-route.js](file:///c:/workspace/dsh-verbatim/src/tools/time-route.js)）：固定按上海时区（`UTC+8`）将标准日期/区间转为 `[from, to)`。
+   - `when` 解析与展示排版（[src/tools/time-route.js](file:///c:/workspace/dsh-verbatim/src/tools/time-route.js)、[src/tools/format.js](file:///c:/workspace/dsh-verbatim/src/tools/format.js)）：默认按上海时区（`Asia/Shanghai`，`UTC+8`）将标准日期/区间转为 `[from, to)`，并支持通过 `VERBATIM_TZ`（IANA 时区，自动处理夏令时）或 `VERBATIM_TZ_OFFSET_MINUTES` 覆盖；说话人标签默认「他 / 我」，可通过 `speakerLabels` 或 `VERBATIM_SPEAKER_USER` / `VERBATIM_SPEAKER_ASSISTANT` 自定义。
    - 关键词路：2 字以下走 `LIKE`，3 字以上走 `FTS5 trigram`。
    - 向量路：在满足索引覆盖门槛与模型一致性校验后，并行检索 `vec_msg` / `vec_chunk` / `vec_window` / `vec_note` 与 `vec_scene`。
 2. **融合与精排**：

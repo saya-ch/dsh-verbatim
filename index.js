@@ -15,7 +15,7 @@ import { createRepo, createExtras } from './src/store/repo.js';
 import { createSessionToolSet } from './src/tools/index.js';
 import { defaultSessionConfig } from './src/config/session-config.js';
 import { importSession } from './src/pipeline.js';
-import { dayKeyInZone } from './src/ingest/export.js';
+import { shanghaiParts } from './src/tools/format.js';
 import { loadGlobalConfig } from './src/config/global-config.js';
 import { createSessionLock } from './src/host/session-lock.js';
 import {
@@ -270,7 +270,11 @@ export function apply(ctx, config = {}) {
     }
     return { day: today, used: 0 };
   };
-  let dailyRefineBudget = readRefineBudget(dayKeyInZone(Date.now()));
+  const budgetDayKey = (at = Date.now()) => {
+    const p = shanghaiParts(at, undefined);
+    return `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`;
+  };
+  let dailyRefineBudget = readRefineBudget(budgetDayKey(Date.now()));
   const saveRefineBudget = () => {
     if (!budgetFile) return;
     try {
@@ -284,7 +288,7 @@ export function apply(ctx, config = {}) {
     try { g = loadGlobalConfig({ dshHome }).config; } catch { return; }
     const llm = g.llm ?? {};
     if (llm.enabled !== true || llm.autoRefine !== true || !llm.model) return;
-    const today = dayKeyInZone(Date.now());
+    const today = budgetDayKey(Date.now());
     if (dailyRefineBudget.day !== today) {
       dailyRefineBudget = readRefineBudget(today);
     }
