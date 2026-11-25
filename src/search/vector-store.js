@@ -43,138 +43,33 @@
 import { DatabaseSync } from 'node:sqlite';
 
 import { withTx } from '../store/repo.js';
+import {
+  DEFAULT_DIM,
+  DEFAULT_OVER_FETCH,
+  FALLBACK_TABLES,
+  toFloat32,
+  normalizeVector,
+  toBlob,
+  dot,
+  distanceToScore,
+  scoreToDistance,
+} from './vector-math.js';
 
-/** 向量维度（D-144：1024，不是 2560） */
-export const DEFAULT_DIM = 1024;
-
-/** KNN 候选放大倍数：先多取，再在外层过滤（D-150 的落地方式） */
-export const DEFAULT_OVER_FETCH = 8;
-
-/** 降级模式的落盘表名（只在不加载 sqlite-vec 时才会被创建） */
-export const FALLBACK_TABLES = {
-  msg: 'vec_fallback_msg',
-  scene: 'vec_fallback_scene',
-  chunk: 'vec_fallback_chunk',
-  note: 'vec_fallback_note',
-  window: 'vec_fallback_window',
+export {
+  DEFAULT_DIM,
+  DEFAULT_OVER_FETCH,
+  FALLBACK_TABLES,
+  normalizeVector,
+  toBlob,
+  dot,
+  distanceToScore,
+  scoreToDistance,
 };
 
 /** FTS/检索结果的公共字段（与 store 的 MsgRow 对齐，见 BUILD-PLAN §3.1） */
 const MSG_SELECT = `m.id, m.session_id, m.seq, m.at, m.speaker, m.text,
   m.in_surface, m.compacted_at, m.excluded, m.scene_id,
   s.start_at AS scene_start_at, s.end_at AS scene_end_at, s.msg_count AS scene_msg_count`;
-
-/* ============================ 向量工具函数 ============================ */
-
-/**
- * 把各种入参统一成 Float32Array（不校验维度以外的语义）。
- * @param {Float32Array|number[]|Uint8Array|ArrayBuffer} input
- * @param {number} dim
- * @param {string} [what] 报错时用的人话名词
- * @returns {Float32Array}
- */
-function toFloat32(input, dim, what = '向量') {
-  if (input instanceof Float32Array) {
-    if (input.length !== dim) {
-      throw new TypeError(`${what}维度不对：要 ${dim} 维，收到 ${input.length} 维`);
-    }
-    return input;
-  }
-  if (input instanceof Uint8Array) {
-    // 裸字节（BLOB）：长度必须是 dim × 4
-    if (input.byteLength !== dim * 4) {
-      throw new TypeError(`${what}的字节数不对：要 ${dim * 4} 字节（${dim} 维 float32），收到 ${input.byteLength}`);
-    }
-    const copy = new Uint8Array(input); // 复制，避免调用方的 buffer 被共用
-    return new Float32Array(copy.buffer, copy.byteOffset, dim);
-  }
-  if (input instanceof ArrayBuffer) {
-    return toFloat32(new Uint8Array(input), dim, what);
-  }
-  if (Array.isArray(input)) {
-    if (input.length !== dim) {
-      throw new TypeError(`${what}维度不对：要 ${dim} 维，收到 ${input.length} 维`);
-    }
-    return Float32Array.from(input);
-  }
-  throw new TypeError(`${what}必须是 Float32Array / number[] / BLOB，收到 ${typeof input}`);
-}
-
-/**
- * L2 归一化。返回**新的** Float32Array，绝不改调用方的数组。
- *
- * 为什么非归一化不可：vec0 用 L2 距离，单位向量下 L2² = 2 - 2·cos，
- * 于是 distance 能无损换算成余弦，和暴力余弦路径同一口径（见文件头 ③）。
- *
- * @param {Float32Array|number[]|Uint8Array|ArrayBuffer} input
- * @param {number} dim
- * @param {string} [what]
- * @returns {Float32Array}
- */
-export function normalizeVector(input, dim, what = '向量') {
-  const src = toFloat32(input, dim, what);
-  const out = new Float32Array(dim);
-  let sumSq = 0;
-  for (let i = 0; i < dim; i++) {
-    const v = src[i];
-    if (!Number.isFinite(v)) {
-      throw new TypeError(`${what}: 第 ${i} 维不是有限数值（${v}）`);
-    }
-    sumSq += v * v;
-  }
-  const norm = Math.sqrt(sumSq);
-  if (norm > 0) {
-    for (let i = 0; i < dim; i++) out[i] = src[i] / norm;
-  } else {
-    // 全零向量没有方向，塞成固定单位向量（和 mock.js 的处理一致），至少不会 NaN
-    out[0] = 1;
-  }
-  return out;
-}
-
-/**
- * Float32Array → BLOB（供 node:sqlite 绑定）
- *
- * **必须返回副本，不能返回视图。**
- *
- * 踩过的坑（表现为「同一查询的向量每次都在变」）：
- *   `new Uint8Array(vector.buffer, byteOffset, byteLength)` 是与入参**共享内存**的视图。
- *   node:sqlite 在绑定 BLOB 参数时会写这块内存（内部缓冲复用），
- *   于是调用方持有的向量被**原地篡改**。
- *   实测：同一查询两次取到的向量最大差异 0.0021，且随调用次数累积漂移；
- *   配合「跨变体共享的查询向量缓存」，一次运行里向量会越用越偏，
- *   最终表现为某些变体的检索结果系统性变差（正确率从 65% 掉到 16%）。
- *
- *   这个 bug 不报错、只在长跑里显现，是最难查的一类。
- */
-export function toBlob(vector) {
-  // Uint8Array.from 会复制字节，切断与入参的共享内存
-  return Uint8Array.from(new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength));
-}
-
-/**
- * 点积。两个向量都已归一化时点积 = 余弦相似度（D-145：不做 int8，直接 f32）。
- * @param {Float32Array} a
- * @param {Float32Array} b
- * @returns {number}
- */
-export function dot(a, b) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s;
-}
-
-/** L2 距离 → 余弦。单位向量下恒等（见文件头 ③）。 */
-export function distanceToScore(distance) {
-  const d2 = Math.min(4, Math.max(0, distance * distance));
-  return 1 - d2 / 2;
-}
-
-/** 余弦 → L2 距离。给降级路径对齐 vec0 的 distance 口径用。 */
-export function scoreToDistance(score) {
-  const cos = Math.min(1, Math.max(-1, score));
-  return Math.sqrt(Math.max(0, 2 - 2 * cos));
-}
 
 /* ============================== 主体 ============================== */
 

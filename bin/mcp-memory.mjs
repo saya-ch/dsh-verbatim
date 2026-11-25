@@ -35,6 +35,7 @@ import { loadGlobalConfig } from '../src/config/global-config.js';
 import { loadSessionConfig, sessionConfigPath } from '../src/config/session-config.js';
 import { importSession } from '../src/pipeline.js';
 import { createSessionLock } from '../src/host/session-lock.js';
+import { discoverSessionLogs } from '../src/host/session-sync.js';
 
 const VERSION = '0.1.0';
 const log = (...args) => console.error('[verbatim-mcp]', ...args);
@@ -43,32 +44,8 @@ const log = (...args) => console.error('[verbatim-mcp]', ...args);
 
 /** 在 $DSH_HOME/sessions 下收集全部 session.v4.jsonl.zstd 并按 mtime 倒序排列 */
 function discoverSessions() {
-  const root = path.join(process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh'), 'sessions');
-  if (!fs.existsSync(root)) return [];
-
-  const found = [];
-  const walk = (dir, depth) => {
-    if (depth > 3) return;
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p, depth + 1);
-      else if (e.name === 'session.v4.jsonl.zstd') {
-        try {
-          const mtimeMs = fs.statSync(p).mtimeMs;
-          found.push({ file: p, sessionId: path.basename(path.dirname(p)), mtimeMs });
-        } catch { /* 读不到就跳过 */ }
-      }
-    }
-  };
-  try { walk(root, 0); } catch { /* 权限问题当没找到 */ }
-  found.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return found;
+  const dshHome = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh');
+  return discoverSessionLogs(dshHome);
 }
 
 function resolvePinnedSession() {

@@ -48,9 +48,22 @@ import { createSessionLock } from './session-lock.js';
 import { createReranker } from '../model/rerank.js';
 import { dedupeBySpan, createSpanIndex } from '../search/dedupe.js';
 import { SCENE_FALLBACK_ENABLED } from '../search/scene-fallback.js';
+import {
+  API_PREFIX,
+  PANEL_METHODS,
+  PanelError,
+  createPanelHandler,
+} from './panel-http.js';
+import { findSessionFile, findLatestSession } from './session-sync.js';
 
-/** 面板 RPC 前缀（client.js 的 fetch 前缀必须一致） */
-export const API_PREFIX = '/verbatim-api';
+export {
+  API_PREFIX,
+  PANEL_METHODS,
+  PanelError,
+  createPanelHandler,
+  findSessionFile,
+  findLatestSession,
+};
 
 /** 时间上界：比任何真实 at 都大（注意别用位运算，会把数截成 int32） */
 const TIME_MAX = Number.MAX_SAFE_INTEGER;
@@ -63,162 +76,6 @@ const LOG_CACHE_MAX = 8;
 
 /** 会话日志文件清单的缓存时长（792 个目录的 stat，别每个请求都扫） */
 const SESSION_FILE_TTL_MS = 30_000;
-
-/**
- * 面板全部 20 个 RPC（PANEL.md §5，ACCEPTANCE E 组：一个都不能少）。
- * 必须与 createPanelApi() 的 `methods` 一一对应（panel-config.test.js 校验）。
- *
- *   会话面板 16 个：status … restoreNote + search / deletedNotes / setExcludeRanges
- *   重建轮询  1 个：task
- *   设置页    3 个：globalConfig / setGlobalConfig / probeLocal
- */
-export const PANEL_METHODS = Object.freeze([
-  'status',
-  'timeline',
-  'sceneDetail',
-  'notes',
-  'deletedNotes',
-  'sample',
-  'verify',
-  'search',
-  'set',
-  'setExcludeRanges',
-  'rebuild',
-  'task',
-  'flag',
-  'flags',
-  'unflag',
-  'deleteNote',
-  'restoreNote',
-  'addNote',
-  'globalConfig',
-  'setGlobalConfig',
-  'probeLocal',
-  'dbOverview',
-  'dbRows',
-  'dbQuery',
-  'dbMaintain',
-  'recallLog',
-  'mergeScene',
-  'splitScene',
-  'refineOneScene',
-  'mediaPreview',
-  'setMediaCaption',
-  'findDuplicateNotes',
-  'mergeNotes',
-  'setSceneGist',
-  'setMsgExcluded',
-  'updateNote',
-]);
-
-const WRITE_METHODS = new Set([
-  'set',
-  'batchSetSessionFlags',
-  'setExcludeRanges',
-  'rebuild',
-  'flag',
-  'unflag',
-  'deleteNote',
-  'restoreNote',
-  'addNote',
-  'setGlobalConfig',
-  'dbMaintain',
-  'mergeScene',
-  'splitScene',
-  'refineOneScene',
-  'setMediaCaption',
-  'mergeNotes',
-  'setSceneGist',
-  'setMsgExcluded',
-  'updateNote',
-]);
-
-/** 这套 API 之前的 4 个临时端点 —— 已废弃，明确告知迁移而不是静默 404 */
-const LEGACY_PANEL_PATHS = new Set(['/stats', '/timeline', '/notes', '/flags']);
-
-/** 依赖 DSH 的工具注册表与 HTTP 载体 */
-
-/* ══════════════════════════════════════════════════════════════════════
- * 面板 RPC：错误类型与参数工具
- * ══════════════════════════════════════════════════════════════════════ */
-
-/** 带 HTTP 状态码的 RPC 错误：前端能据此区分「参数错 / 目标不存在 / 内部错」 */
-export class PanelError extends Error {
-  /**
-   * @param {string} code 稳定的错误码（前端可判断）
-   * @param {string} message 人话说明
-   * @param {number} [status] HTTP 状态码
-   */
-  constructor(code, message, status = 400) {
-    super(message);
-    this.name = 'PanelError';
-    this.code = code;
-    this.status = status;
-  }
-}
-
-/** 按 sessionId 快速定位会话日志（O(工作区目录数)，命中后按路径复用） */
-export function findSessionFile(dshHome, sessionId) {
-  if (typeof sessionId !== 'string' || !sessionId.trim()) return null;
-  const root = path.join(dshHome, 'sessions');
-  if (!fs.existsSync(root)) return null;
-
-  const sid = sessionId.trim();
-  const candidates = [sid];
-  if (sid.startsWith('session-')) candidates.push(sid.slice('session-'.length));
-  else candidates.push(`session-${sid}`);
-
-  for (const id of candidates) {
-    const direct = path.join(root, id, 'session.v4.jsonl.zstd');
-    if (fs.existsSync(direct)) return direct;
-  }
-
-  let workspaces = [];
-  try {
-    workspaces = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const ws of workspaces) {
-    if (!ws.isDirectory()) continue;
-    const wsDir = path.join(root, ws.name);
-    for (const id of candidates) {
-      const p = path.join(wsDir, id, 'session.v4.jsonl.zstd');
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  return null;
-}
-
-/** 在 $DSH_HOME/sessions 下找最近修改的 session.v4.jsonl.zstd */
-export function findLatestSession(dshHome) {
-  const root = path.join(dshHome, 'sessions');
-  if (!fs.existsSync(root)) return null;
-
-  let best = null;
-  let bestAt = 0;
-  const walk = (dir, depth) => {
-    if (depth > 3) return;
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p, depth + 1);
-      else if (e.name === 'session.v4.jsonl.zstd') {
-        try {
-          const at = fs.statSync(p).mtimeMs;
-          if (at > bestAt) { bestAt = at; best = p; }
-        } catch { /* 读不到就跳过 */ }
-      }
-    }
-  };
-  try { walk(root, 0); } catch { /* 权限问题当没找到 */ }
-  return best;
-}
 
 /** 取整参数（缺省给默认值；范围外/非整数直接报错，不静默截断） */
 function intParam(value, name, { def, min = -Infinity, max = Infinity } = {}) {
@@ -254,52 +111,7 @@ function instantParam(value, name, def) {
   return at;
 }
 
-/** query 串里的数字/布尔还原成真类型（手工 fetch 时不必自己 encode） */
-function coerceParams(input) {
-  const INT_KEYS = new Set(['msgId', 'sceneId', 'id', 'limit', 'offset']);
-  const BOOL_KEYS = new Set(['value', 'reset', 'includeExcluded', 'excluded']);
-  const out = {};
-  for (const [k, v] of Object.entries(input ?? {})) {
-    if (typeof v !== 'string') { out[k] = v; continue; }
-    if (INT_KEYS.has(k) && /^-?\d+$/.test(v.trim())) { out[k] = Number(v); continue; }
-    if (BOOL_KEYS.has(k) && (v === 'true' || v === 'false')) { out[k] = v === 'true'; continue; }
-    out[k] = v;
-  }
-  return out;
-}
-
-/**
- * 读 HTTP 请求体（JSON）。GET/HEAD 没有 body。
- * 返回 null 表示 body 存在但不是合法 JSON —— 调用方要回 400，不能静默当成 {}。
- *
- * @param {import('node:http').IncomingMessage} req
- * @returns {Promise<object|null>}
- */
-function readRequestBody(req) {
-  return new Promise((resolve) => {
-    if (!req || req.method === 'GET' || req.method === 'HEAD') return resolve({});
-    const chunks = [];
-    let size = 0;
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    req.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > 1_000_000) return finish(null); // 1MB 足够，防止被灌爆
-      chunks.push(chunk);
-    });
-    req.on('end', () => {
-      const text = Buffer.concat(chunks).toString('utf8').trim();
-      if (!text) return finish({});
-      try {
-        const parsed = JSON.parse(text);
-        finish(parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null);
-      } catch {
-        finish(null);
-      }
-    });
-    req.on('error', () => finish({}));
-  });
-}
+/** 依赖 DSH 的工具注册表与 HTTP 载体 */
 
 /**
  * 创建面板 RPC 的**业务层**（不依赖 HTTP，便于测试与复用）。
@@ -1877,192 +1689,5 @@ export function createPanelApi(opts = {}) {
         dbPath,
       };
     },
-  };
-}
-
-/* ══════════════════════════════════════════════════════════════════════
- * 面板 RPC：HTTP 适配层
- * ══════════════════════════════════════════════════════════════════════ */
-
-/** 统一的 JSON 响应（永远带 no-store：面板看的是实时状态） */
-function sendJson(res, body, status = 200) {
-  const text = JSON.stringify(body);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(text),
-  });
-  res.end(text);
-}
-
-/** 不依赖会话日志的面板 RPC：跳过同步，保证设置页/探测/轮询/写开关/异步任务发起/库管理即时响应 */
-const SKIP_SYNC_METHODS = new Set([
-  'globalConfig',
-  'setGlobalConfig',
-  'probeLocal',
-  'task',
-  'rebuild',
-  'set',
-  'setExcludeRanges',
-  'addNote',
-  'dbOverview',
-  'dbRows',
-  'dbQuery',
-  'dbMaintain',
-  'recallLog',
-  'mergeScene',
-  'splitScene',
-  'refineOneScene',
-  'mediaPreview',
-  'setMediaCaption',
-  'findDuplicateNotes',
-  'mergeNotes',
-  'setSceneGist',
-  'setMsgExcluded',
-  'updateNote',
-]);
-
-function isSameOriginRequest(req, allowedOrigins = null) {
-  const secFetchSite = String(req?.headers?.['sec-fetch-site'] ?? '').trim().toLowerCase();
-  if (secFetchSite === 'cross-site') return false;
-
-  const rawOrigin = req?.headers?.origin;
-  if (typeof rawOrigin !== 'string' || !rawOrigin.trim()) return true;
-  const origin = rawOrigin.trim();
-  if (Array.isArray(allowedOrigins) && allowedOrigins.includes(origin)) return true;
-
-  let parsedOrigin;
-  try {
-    parsedOrigin = new URL(origin);
-  } catch {
-    return false;
-  }
-  const hostHeader = String(req?.headers?.host ?? '').trim();
-  if (!hostHeader) return false;
-  if (parsedOrigin.host.toLowerCase() === hostHeader.toLowerCase()) return true;
-
-  // 允许本机回环别名（localhost / 127.0.0.1 / [::1]）在同端口下互通
-  const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-  let parsedHost;
-  try {
-    parsedHost = new URL(`http://${hostHeader}`);
-  } catch {
-    return false;
-  }
-  const oHost = parsedOrigin.hostname.toLowerCase();
-  const hHost = parsedHost.hostname.toLowerCase();
-  const oPort = parsedOrigin.port || (parsedOrigin.protocol === 'https:' ? '443' : '80');
-  const hPort = parsedHost.port || (parsedOrigin.protocol === 'https:' ? '443' : '80');
-  return loopbackHosts.has(oHost) && loopbackHosts.has(hHost) && oPort === hPort;
-}
-
-/**
- * 把 createPanelApi() 适配成 DSH webServer 的 handler。
- *
- * 路径约定：`${API_PREFIX}/panel.<method>`（PANEL.md §5）。
- * 参数同时接受 query（GET）和 JSON body（POST）。
- *
- * @param {object} api createPanelApi() 的返回值
- * @param {{
- *   beforeRequest?: (ctx: {method: string, sessionId: string|null}) => Promise<void>|void,
- *   afterCall?: (ctx: {method: string, params: Record<string, any>, result: unknown}) => Promise<void>|void,
- *   allowedOrigins?: string[],
- * }} [opts]
- */
-export function createPanelHandler(api, opts = {}) {
-  const beforeRequest = typeof opts.beforeRequest === 'function' ? opts.beforeRequest : null;
-  const afterCall = typeof opts.afterCall === 'function' ? opts.afterCall : null;
-  const allowedOrigins = Array.isArray(opts.allowedOrigins) ? opts.allowedOrigins : null;
-
-  return async function handler(req, res) {
-    const httpMethod = String(req?.method ?? 'GET').toUpperCase();
-    if (!['GET', 'POST', 'HEAD', 'OPTIONS'].includes(httpMethod)) {
-      return sendJson(res, { ok: false, code: 'METHOD_NOT_ALLOWED', error: `不支持的 HTTP 方法：${httpMethod}` }, 405);
-    }
-    if (!isSameOriginRequest(req, allowedOrigins)) {
-      return sendJson(res, { ok: false, code: 'FORBIDDEN_ORIGIN', error: '拒绝跨站请求（Origin 校验未通过）' }, 403);
-    }
-    if (httpMethod === 'OPTIONS') {
-      res.writeHead(204, { 'cache-control': 'no-store' });
-      res.end();
-      return;
-    }
-
-    let url;
-    try {
-      url = new URL(req.url ?? '/', 'http://localhost');
-    } catch {
-      return sendJson(res, { ok: false, code: 'BAD_URL', error: '请求地址解析不了' }, 400);
-    }
-
-    const rawPath = url.pathname;
-    const p = rawPath.startsWith(API_PREFIX) ? rawPath.slice(API_PREFIX.length) || '/' : rawPath;
-
-    if (!p.startsWith('/panel.')) {
-      const legacy = LEGACY_PANEL_PATHS.has(p);
-      return sendJson(
-        res,
-        {
-          ok: false,
-          code: legacy ? 'LEGACY_ENDPOINT' : 'NOT_FOUND',
-          error: legacy
-            ? `旧端点 ${p} 已废弃：它不按会话过滤，会把别的对话的数据混进来（A2 的 bug）。`
-              + `请改用 ${API_PREFIX}/panel.status 等 RPC（见 PANEL.md §5）。`
-            : `没有这个端点：${p}。RPC 路径形如 ${API_PREFIX}/panel.status`,
-          methods: [...PANEL_METHODS],
-        },
-        legacy ? 410 : 404,
-      );
-    }
-
-    const method = p.slice('/panel.'.length);
-    if (req.method === 'GET' && WRITE_METHODS.has(method)) {
-      res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', Allow: 'POST' });
-      res.end(JSON.stringify({
-        ok: false,
-        method: `panel.${method}`,
-        code: 'METHOD_NOT_ALLOWED',
-        error: `写操作 panel.${method} 必须使用 POST 请求`,
-      }));
-      return;
-    }
-    const body = await readRequestBody(req);
-    if (body === null) {
-      return sendJson(res, { ok: false, code: 'BAD_JSON', error: '请求体不是合法 JSON 对象' }, 400);
-    }
-
-    const query = {};
-    for (const [k, v] of url.searchParams) query[k] = v;
-    const params = coerceParams({ ...query, ...body });
-
-    // 先把目标会话数据同步到最新，否则面板看到的是旧数字（失败就用现有数据）
-    if (beforeRequest && !SKIP_SYNC_METHODS.has(method)) {
-      const sessionId = typeof params.sessionId === 'string' && params.sessionId.trim()
-        ? params.sessionId.trim()
-        : null;
-      try {
-        await beforeRequest({ method, sessionId });
-      } catch { /* 同步失败不影响读取 */ }
-    }
-
-    try {
-      const result = await api.call(method, params);
-      if (afterCall) {
-        try { await afterCall({ method, params, result }); } catch { /* 后置钩子失败不影响响应 */ }
-      }
-      return sendJson(res, result, 200);
-    } catch (error) {
-      const status = error instanceof PanelError ? error.status : 500;
-      return sendJson(
-        res,
-        {
-          ok: false,
-          method: `panel.${method}`,
-          code: error?.code ?? 'INTERNAL_ERROR',
-          error: error?.message ?? String(error),
-        },
-        status,
-      );
-    }
   };
 }
