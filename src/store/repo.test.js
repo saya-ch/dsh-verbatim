@@ -108,7 +108,7 @@ test('openDb: 内存库建出全部基础表，且重复建表幂等', () => {
   assert.equal(prevAll(handle.db, "SELECT name FROM sqlite_master WHERE name = 'msg'").length, 1);
   // 触发器都在（窗口不再有 FTS 同步触发器）
   const triggers = prevAll(handle.db, "SELECT name FROM sqlite_master WHERE type = 'trigger'").map((r) => r.name);
-  assert.deepEqual(triggers.sort(), ['msg_ad', 'msg_ai', 'msg_au']);
+  assert.deepEqual(triggers.sort(), ['msg_ad', 'msg_ad_cjk2', 'msg_ai', 'msg_au']);
   handle.close();
 });
 

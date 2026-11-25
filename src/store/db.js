@@ -543,6 +543,32 @@ const MIGRATIONS = [
       db.exec('ALTER TABLE fact ADD COLUMN session_id TEXT');
     }
   },
+  // v16 → v17：新增 2-gram 中文短词辅助 FTS5 索引并回填存量消息
+  (db) => {
+    const exists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'msg_cjk2_fts'")
+      .get();
+    if (!exists) {
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS msg_cjk2_fts USING fts5(
+          bigrams,
+          tokenize='unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS msg_ad_cjk2 AFTER DELETE ON msg BEGIN
+          DELETE FROM msg_cjk2_fts WHERE rowid = old.id;
+        END;
+      `);
+      const ins = db.prepare('INSERT INTO msg_cjk2_fts(rowid, bigrams) VALUES (?, ?)');
+      for (const r of db.prepare('SELECT id, text FROM msg').iterate()) {
+        const out = [];
+        for (const m of String(r.text ?? '').matchAll(/[\u4e00-\u9fff]{2,}/g)) {
+          const run = m[0];
+          for (let i = 0; i < run.length - 1; i += 1) out.push(run.slice(i, i + 2));
+        }
+        if (out.length > 0) ins.run(Number(r.id), out.join(' '));
+      }
+    }
+  },
 ];
 
 /**

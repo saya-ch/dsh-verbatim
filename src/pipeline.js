@@ -749,7 +749,8 @@ async function classifyBeats({ repo, llm, sessionIds, limit }) {
   let classified = 0;
   let beats = 0;
   for (const sid of sessionIds) {
-    const msgs = repo.msgsByTimeRange(sid, 0, TIME_MAX, ALL_MSGS_LIMIT);
+    if (classified >= limit) break;
+    const msgs = repo.msgsByTimeRange(sid, 0, TIME_MAX, Math.max(limit - classified + 1, 100));
     for (let i = 0; i < msgs.length && classified < limit; i++) {
       const msg = msgs[i];
       try {

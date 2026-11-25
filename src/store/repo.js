@@ -348,7 +348,17 @@ export function createRepo(handle) {
          scene_id = COALESCE(excluded.scene_id, msg.scene_id)
        RETURNING id`,
     ).get(sessionId, seq, at, speaker, text, inSurface, compactedAt, excluded ?? 0, sceneId, excluded);
-    return Number(got.id);
+    const id = Number(got.id);
+    try {
+      const out = [];
+      for (const m of String(text ?? '').matchAll(/[\u4e00-\u9fff]{2,}/g)) {
+        const run = m[0];
+        for (let i = 0; i < run.length - 1; i += 1) out.push(run.slice(i, i + 2));
+      }
+      stmt('DELETE FROM msg_cjk2_fts WHERE rowid = ?').run(id);
+      if (out.length > 0) stmt('INSERT INTO msg_cjk2_fts(rowid, bigrams) VALUES (?, ?)').run(id, out.join(' '));
+    } catch { /* 老库尚未迁移 msg_cjk2_fts 时忽略 */ }
+    return id;
   }
 
   /**

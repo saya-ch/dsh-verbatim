@@ -84,6 +84,7 @@ export {
  *   hasVec?: boolean,           // 强制指定扩展可用性（测试用）；不传则自行探测
  *   overFetch?: number,         // KNN 候选放大倍数，默认 8
  *   persistFallback?: boolean,  // 降级向量是否落普通 BLOB 表，默认 true
+ *   maxFallbackVectors?: number, // 降级模式内存 LRU 上限，默认 50000
  *   logger?: { warn(msg: string): void },
  * }} [options]
  */
@@ -177,6 +178,7 @@ export function createVectorStore(handle, options = {}) {
     dim,
     persistFallback,
     hasVec,
+    maxVectors: options.maxFallbackVectors,
     logger,
   });
 
@@ -399,22 +401,12 @@ export function createVectorStore(handle, options = {}) {
     const minScore = Number.isFinite(filter.minScore) ? filter.minScore : null;
 
     if (!hasVec) {
-      fallback.ensureLoaded();
-      const source = fallback.mapOf(kind);
-      const allowed = prefilterFallbackIds(kind, filter, source.size);
+      const allowed = prefilterFallbackIds(kind, filter, total);
       if (allowed && allowed.size === 0) return [];
 
       let allCands;
       if (allowed) {
-        allCands = [];
-        for (const id of allowed) {
-          const vec = source.get(id);
-          if (!vec) continue;
-          const score = dot(q, vec);
-          if (minScore !== null && score < minScore) continue;
-          allCands.push({ id, distance: scoreToDistance(score) });
-        }
-        allCands.sort((a, b) => a.distance - b.distance || a.id - b.id);
+        allCands = fallback.knnForIds(kind, q, allowed, minScore);
       } else {
         allCands = candidates(kind, q, total);
       }

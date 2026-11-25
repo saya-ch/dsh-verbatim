@@ -60,6 +60,11 @@ function ftsExpr(terms) {
   return terms.map((t) => `"${t.replaceAll('"', '""')}"`).join(' OR ');
 }
 
+function shortCjkTermOf(raw) {
+  const s = String(raw ?? '').trim();
+  return /^[\u4e00-\u9fff]{2}$/.test(s) ? s : null;
+}
+
 function keywordFilter(opts) {
   const filters = [];
   const filterArgs = [];
@@ -115,6 +120,24 @@ export function createSearchExtras({ stmt, p, mapMsg }) {
         }
       }
 
+      const shortCjk = shortCjkTermOf(raw);
+      if (shortCjk) {
+        try {
+          return stmt(
+            `SELECT ${cols}
+             FROM msg m LEFT JOIN scene s ON s.id = m.scene_id
+             WHERE m.id IN (SELECT rowid FROM msg_cjk2_fts WHERE msg_cjk2_fts MATCH ?)
+               AND m.text LIKE ? ESCAPE '\\'${tail}
+             ORDER BY m.at DESC
+             LIMIT ?`,
+          )
+            .all(ftsExpr([shortCjk]), `%${escapeLike(raw)}%`, ...filterArgs, limit)
+            .map(mapMsgWithScene);
+        } catch {
+          // 老库未建 msg_cjk2_fts 时回落纯 LIKE
+        }
+      }
+
       return stmt(
         `SELECT ${cols}
          FROM msg m LEFT JOIN scene s ON s.id = m.scene_id
@@ -142,6 +165,21 @@ export function createSearchExtras({ stmt, p, mapMsg }) {
           if (Number(hit.c) > 0) return Number(hit.c);
         } catch {
           // FTS 语法错误就落 LIKE
+        }
+      }
+
+      const shortCjk = shortCjkTermOf(raw);
+      if (shortCjk) {
+        try {
+          const hit = stmt(
+            `SELECT COUNT(*) AS c
+             FROM msg m
+             WHERE m.id IN (SELECT rowid FROM msg_cjk2_fts WHERE msg_cjk2_fts MATCH ?)
+               AND m.text LIKE ? ESCAPE '\\'${tail}`,
+          ).get(ftsExpr([shortCjk]), `%${escapeLike(raw)}%`, ...filterArgs);
+          return Number(hit.c ?? 0);
+        } catch {
+          // 老库未建 msg_cjk2_fts 时回落纯 LIKE
         }
       }
 

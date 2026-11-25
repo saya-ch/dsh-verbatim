@@ -231,6 +231,18 @@ CREATE TRIGGER IF NOT EXISTS msg_au AFTER UPDATE OF text ON msg BEGIN
   INSERT INTO msg_fts(rowid, text) VALUES (new.id, new.text);
 END;
 
+-- ---------------------------------------------------------------------------
+-- ⑩ 2-gram 中文短词辅助倒排索引（加速 ≤2 字中文查询预过滤，保留 LIKE 精确子串语义）
+-- ---------------------------------------------------------------------------
+CREATE VIRTUAL TABLE IF NOT EXISTS msg_cjk2_fts USING fts5(
+  bigrams,
+  tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS msg_ad_cjk2 AFTER DELETE ON msg BEGIN
+  DELETE FROM msg_cjk2_fts WHERE rowid = old.id;
+END;
+
 -- ============================================================================
 -- 向量索引段（BUILD-PLAN §4.4 / IMPLEMENTATION.md §1）
 --

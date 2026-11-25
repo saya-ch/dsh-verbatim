@@ -41,6 +41,8 @@ const ORPHAN_PRUNE_SQL = Object.freeze({
   window: `DELETE FROM ${FALLBACK_TABLES.window} WHERE window_id NOT IN (SELECT id FROM window)`,
 });
 
+const DEFAULT_MAX_FALLBACK_VECTORS = 50_000;
+
 /**
  * @param {object} opts
  * @param {import('node:sqlite').DatabaseSync} opts.db
@@ -48,9 +50,19 @@ const ORPHAN_PRUNE_SQL = Object.freeze({
  * @param {number} opts.dim
  * @param {boolean} opts.persistFallback
  * @param {boolean} opts.hasVec
+ * @param {number} [opts.maxVectors]
  * @param {{ warn?: (msg: string) => void }} opts.logger
  */
-export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasVec, logger }) {
+export function createFallbackVectorIndex({
+  db,
+  stmt,
+  dim,
+  persistFallback,
+  hasVec,
+  maxVectors = DEFAULT_MAX_FALLBACK_VECTORS,
+  logger,
+}) {
+  const cap = Number.isFinite(maxVectors) && maxVectors > 0 ? Math.trunc(maxVectors) : DEFAULT_MAX_FALLBACK_VECTORS;
   /** @type {Record<'msg'|'scene'|'chunk'|'note'|'window', Map<number, Float32Array>>} */
   const maps = {
     msg: new Map(),
@@ -69,6 +81,29 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     note: false,
     window: false,
   };
+
+  /** 若表内向量数超过 cap，则只保留 LRU 热缓存并按需从 SQLite 流式读取 */
+  /** @type {Record<'msg'|'scene'|'chunk'|'note'|'window', boolean>} */
+  const cappedKinds = {
+    msg: false,
+    scene: false,
+    chunk: false,
+    note: false,
+    window: false,
+  };
+
+  /** @param {'msg'|'scene'|'chunk'|'note'|'window'} kind @param {number} id @param {Float32Array} vec */
+  function lruSet(kind, id, vec) {
+    const m = maps[kind];
+    if (m.has(id)) m.delete(id);
+    m.set(id, vec);
+    while (m.size > cap) {
+      cappedKinds[kind] = true;
+      const oldest = m.keys().next().value;
+      if (oldest === undefined) break;
+      m.delete(oldest);
+    }
+  }
 
   /** 降级落盘是否真的可用（只读库 / 建表失败就关掉，但内存索引照常工作） */
   let fallbackTableReady = false;
@@ -131,8 +166,17 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
       }
       const col = PK_COLS[kind];
       try {
-        for (const r of stmt(`SELECT ${col}, emb FROM ${FALLBACK_TABLES[kind]}`).all()) {
-          maps[kind].set(Number(r[col]), toFloat32(r.emb, dim, LOAD_LABELS[kind]));
+        const total = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES[kind]}`).get()?.c ?? 0);
+        if (total > cap) {
+          cappedKinds[kind] = true;
+          for (const r of stmt(`SELECT ${col}, emb FROM ${FALLBACK_TABLES[kind]} ORDER BY ${col} DESC LIMIT ?`).all(cap)) {
+            lruSet(kind, Number(r[col]), toFloat32(r.emb, dim, LOAD_LABELS[kind]));
+          }
+        } else {
+          cappedKinds[kind] = false;
+          for (const r of stmt(`SELECT ${col}, emb FROM ${FALLBACK_TABLES[kind]}`).all()) {
+            maps[kind].set(Number(r[col]), toFloat32(r.emb, dim, LOAD_LABELS[kind]));
+          }
         }
       } catch (err) {
         if (!optional) throw err;
@@ -170,6 +214,7 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     }
     try {
       const tableCount = Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES[kind]}`).get().c ?? 0);
+      if (cappedKinds[kind]) return;
       if (tableCount !== maps[kind].size) {
         reloadKind(kind);
       }
@@ -187,6 +232,13 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
   /** @param {'msg'|'scene'|'chunk'|'note'|'window'} kind */
   function count(kind) {
     ensureLoaded(kind);
+    if (cappedKinds[kind] && fallbackTableReady) {
+      try {
+        return Number(stmt(`SELECT COUNT(*) AS c FROM ${FALLBACK_TABLES[kind]}`).get()?.c ?? maps[kind].size);
+      } catch {
+        return maps[kind].size;
+      }
+    }
     syncIfStale(kind);
     return maps[kind].size;
   }
@@ -197,7 +249,7 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
    * @param {Float32Array} vector
    */
   function insertUnsafe(kind, id, vector) {
-    maps[kind].set(Number(id), vector);
+    lruSet(kind, Number(id), vector);
     if (ensureTables()) {
       stmt(`INSERT INTO ${FALLBACK_TABLES[kind]} (${PK_COLS[kind]}, emb) VALUES (?, ?)`)
         .run(Number(id), toBlob(vector));
@@ -210,7 +262,7 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
    * @param {Float32Array} vector
    */
   function upsertUnsafe(kind, id, vector) {
-    maps[kind].set(Number(id), vector);
+    lruSet(kind, Number(id), vector);
     if (ensureTables()) {
       stmt(`INSERT OR REPLACE INTO ${FALLBACK_TABLES[kind]} (${PK_COLS[kind]}, emb) VALUES (?, ?)`)
         .run(Number(id), toBlob(vector));
@@ -288,15 +340,75 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
   }
 
   /**
+   * 仅对预过滤后的 id 集合计算余弦相似度；若缓存已达上限，则分片从 SQLite 补齐缺失向量并写入 LRU。
+   * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
+   * @param {Float32Array} query
+   * @param {Iterable<number>} ids
+   * @param {number|null} [minScore]
+   */
+  function knnForIds(kind, query, ids, minScore = null) {
+    ensureLoaded(kind);
+    const m = maps[kind];
+    const out = [];
+    const missing = [];
+    for (const id of ids) {
+      const vec = m.get(id);
+      if (vec) {
+        const score = dot(query, vec);
+        if (minScore === null || score >= minScore) {
+          out.push({ id, distance: scoreToDistance(score) });
+        }
+      } else if (cappedKinds[kind] && fallbackTableReady) {
+        missing.push(id);
+      }
+    }
+    if (missing.length > 0) {
+      const col = PK_COLS[kind];
+      for (let i = 0; i < missing.length; i += 400) {
+        const slice = missing.slice(i, i + 400);
+        const ph = new Array(slice.length).fill('?').join(', ');
+        const rows = db.prepare(`SELECT ${col} AS id, emb FROM ${FALLBACK_TABLES[kind]} WHERE ${col} IN (${ph})`).all(...slice);
+        for (const r of rows) {
+          const id = Number(r.id);
+          const vec = toFloat32(/** @type {Uint8Array} */ (r.emb), dim, LOAD_LABELS[kind]);
+          lruSet(kind, id, vec);
+          const score = dot(query, vec);
+          if (minScore === null || score >= minScore) {
+            out.push({ id, distance: scoreToDistance(score) });
+          }
+        }
+      }
+    }
+    out.sort((a, b) => a.distance - b.distance || a.id - b.id);
+    return out;
+  }
+
+  /**
    * @param {'msg'|'scene'|'chunk'|'note'|'window'} kind
    * @param {number[]} ids
    */
   function getVecs(kind, ids) {
     ensureLoaded(kind);
     const out = new Map();
+    const missing = [];
     for (const id of ids) {
       const v = maps[kind].get(id);
       if (v) out.set(id, v);
+      else if (cappedKinds[kind] && fallbackTableReady) missing.push(id);
+    }
+    if (missing.length > 0) {
+      const col = PK_COLS[kind];
+      for (let i = 0; i < missing.length; i += 400) {
+        const slice = missing.slice(i, i + 400);
+        const ph = new Array(slice.length).fill('?').join(', ');
+        const rows = db.prepare(`SELECT ${col} AS id, emb FROM ${FALLBACK_TABLES[kind]} WHERE ${col} IN (${ph})`).all(...slice);
+        for (const r of rows) {
+          const id = Number(r.id);
+          const vec = toFloat32(/** @type {Uint8Array} */ (r.emb), dim, LOAD_LABELS[kind]);
+          lruSet(kind, id, vec);
+          out.set(id, vec);
+        }
+      }
     }
     return out;
   }
@@ -366,6 +478,7 @@ export function createFallbackVectorIndex({ db, stmt, dim, persistFallback, hasV
     deleteIds,
     clear,
     knn,
+    knnForIds,
     getVecs,
     missingIds,
     pruneOrphans,
